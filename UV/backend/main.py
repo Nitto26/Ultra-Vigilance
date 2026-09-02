@@ -1,7 +1,8 @@
 # main.py
 """
 FastAPI Backend for UV- Ultra Vigilance.
-Exposes real-time endpoints for Domain Heuristics, SMS Pattern Analysis, and Payment Checks.
+Exposes real-time endpoints for Domain Heuristics, SMS Pattern Analysis, and Payment Checks
+with formatted request/response logging for live terminal monitoring.
 """
 import os
 import logging
@@ -25,7 +26,7 @@ import payment_engine
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("uv.backend")
 
-# --- Model Loading (Loaded ONCE at module level, graceful fail-open on failure) ---
+# --- Model Loading (Loaded ONCE at module level) ---
 domain_model: Optional[Any] = None
 sms_bundle: Optional[Dict[str, Any]] = None
 
@@ -55,7 +56,7 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Enable CORS for external browser extensions, web checkouts, and Android app
+# Enable CORS for external extensions and Android app
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -64,7 +65,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global Exception Handler: Non-negotiable constraint to never return HTTP 500
+# Global Exception Handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception caught on {request.url.path}: {exc}")
@@ -78,6 +79,23 @@ async def global_exception_handler(request: Request, exc: Exception):
         }
     )
 
+# --- Helper for Terminal Inspection Logs ---
+def log_transaction(endpoint: str, req_info: Dict[str, Any], res: ScanVerdictResponse):
+    print("\n" + "=" * 78)
+    print(f"📥 INCOMING REQUEST: {endpoint}")
+    for k, v in req_info.items():
+        print(f" • {k:<16}: {v}")
+    print("-" * 78)
+    verdict_badge = f"[{res.verdict}]"
+    print(f"📤 ENGINE RESPONSE:")
+    print(f" • Verdict / Result : {verdict_badge}")
+    print(f" • Confidence       : {res.confidence:.2f} ({res.confidence * 100:.1f}%)")
+    if res.reasons:
+        print(f" • Reasons          : {'; '.join(res.reasons)}")
+    if res.detail:
+        print(f" • Detail           : {res.detail}")
+    print("=" * 78 + "\n")
+
 # --- Endpoints ---
 
 @app.get("/health")
@@ -89,47 +107,73 @@ def health_check():
         "sms_model_loaded": sms_bundle is not None
     }
 
-# Endpoint 1: Document & Domain Scanning (Supports both /scan-document and /scan-domain)
+# Endpoint 1: Document & Domain Scanning
 @app.post("/scan-document", response_model=ScanVerdictResponse)
 @app.post("/scan-domain", response_model=ScanVerdictResponse)
 def scan_document(req: ScanDocumentRequest):
     """Evaluates a URL against lexical heuristics, WHOIS recency, and XGBoost ML."""
     if domain_model is None:
-        return ScanVerdictResponse(
+        res = ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
             detail="Domain model unavailable"
         )
-    return domain_engine.get_domain_verdict(req.url, domain_model)
+    else:
+        res = domain_engine.get_domain_verdict(req.url, domain_model)
+
+    log_transaction(
+        endpoint="POST /scan-document",
+        req_info={"Target URL": req.url},
+        res=res
+    )
+    return res
 
 # Endpoint 2: SMS Scanning
 @app.post("/scan-sms", response_model=ScanVerdictResponse)
 def scan_sms(req: ScanSmsRequest):
     """Evaluates SMS text for smishing triggers, phone headers, and cross-channel links."""
+    text = req.get_text()
+    sender = req.sender or "UNKNOWN"
+
     if sms_bundle is None:
-        return ScanVerdictResponse(
+        res = ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
             detail="SMS model bundle unavailable"
         )
-    return sms_engine.get_sms_verdict(
-        text=req.get_text(),
-        sender=req.sender,
-        sms_bundle=sms_bundle,
-        domain_model=domain_model
+    else:
+        res = sms_engine.get_sms_verdict(
+            text=text,
+            sender=sender,
+            sms_bundle=sms_bundle,
+            domain_model=domain_model
+        )
+
+    log_transaction(
+        endpoint="POST /scan-sms",
+        req_info={"Sender / User": sender, "Message Content": text},
+        res=res
     )
+    return res
 
 # Endpoint 3: Payment Gateway & UPI Scanning
 @app.post("/scan-payment", response_model=ScanVerdictResponse)
 def scan_payment(req: PaymentRequest):
     """Evaluates checkout gateway URLs and UPI identifiers for malicious vectors."""
-    return payment_engine.check_payment_gateway(
+    res = payment_engine.check_payment_gateway(
         upi_id=req.upi_id,
         gateway_url=req.gateway_url,
         domain_model=domain_model
     )
+
+    log_transaction(
+        endpoint="POST /scan-payment",
+        req_info={"Target UPI ID": req.upi_id or "(None)", "Gateway URL": req.gateway_url or "(None)"},
+        res=res
+    )
+    return res
 
 if __name__ == "__main__":
     import uvicorn
