@@ -4,7 +4,7 @@
 // a banner if the verdict isn't SAFE.
 
 // TODO: point this at your FastAPI backend (ngrok URL during the demo).
-const API_BASE_URL = "https://grandly-nonmathematic-elwanda.ngrok-free.dev/scan-document";
+const API_BASE_URL = "https://mugwumpian-scottie-homely.ngrok-free.dev";
 const SCAN_ENDPOINT = `${API_BASE_URL}/scan-domain`;
 const REQUEST_TIMEOUT_MS = 4000;
 

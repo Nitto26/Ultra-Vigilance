@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">UltraVigilance</string>
+    <string name="accessibility_service_label">UltraVigilance Threat Shield</string>
+    <string name="accessibility_service_desc">Inspects tapped payment links and URLs in real-time across apps to protect against UPI fraud, phishing, and scam links.</string>
 </resources>

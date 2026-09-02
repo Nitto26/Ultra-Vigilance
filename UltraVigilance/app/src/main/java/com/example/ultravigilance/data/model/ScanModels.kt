@@ -23,9 +23,27 @@ data class ScanSmsRequest(
     val message: String
 )
 
+// Request body sent to /scan-payment
+data class ScanPaymentRequest(
+    @SerializedName("upi_id")
+    val upiId: String = "",
+    @SerializedName("gateway_url")
+    val gatewayUrl: String = "",
+    @SerializedName("upi_uri")
+    val upiUri: String = "",
+    val pa: String? = null,
+    val pn: String? = null,
+    val am: String? = null,
+    val cu: String? = null,
+    val tn: String? = null
+)
+
 // Shared verdict schema
 data class ScanVerdict(
     val verdict: String,       // "SAFE" | "SUSPICIOUS" | "FRAUD" | "UNKNOWN"
     val confidence: Double,
-    val reasons: List<String> = emptyList()
+    val reasons: List<String> = emptyList(),
+    val detail: String? = null
 )
+
+

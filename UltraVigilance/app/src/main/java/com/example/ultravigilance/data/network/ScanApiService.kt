@@ -1,7 +1,9 @@
 package com.example.ultravigilance.data.network
 
+import android.util.Log
 import com.example.ultravigilance.data.model.ScanDocumentRequest
 import com.example.ultravigilance.data.model.ScanDocumentResponse
+import com.example.ultravigilance.data.model.ScanPaymentRequest
 import com.example.ultravigilance.data.model.ScanSmsRequest
 import com.example.ultravigilance.data.model.ScanVerdict
 import java.util.concurrent.TimeUnit
@@ -18,11 +20,16 @@ interface ScanApiService {
 
     @POST("scan-sms")
     suspend fun scanSms(@Body request: ScanSmsRequest): Response<ScanVerdict>
+
+    @POST("scan-payment")
+    suspend fun scanPayment(@Body request: ScanPaymentRequest): Response<ScanVerdict>
 }
 
 object ScanApiClient {
-    // Live FastAPI backend tunnel
-    private const val BASE_URL = "https://grandly-nonmathematic-elwanda.ngrok-free.dev/"
+    private const val TAG = "ScanApiClient"
+
+    // Active FastAPI backend tunnel hosting /scan-payment, /scan-document, and /scan-sms
+    private const val BASE_URL = "https://mugwumpian-scottie-homely.ngrok-free.dev/"
 
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -32,7 +39,11 @@ object ScanApiClient {
                 .addHeader("ngrok-skip-browser-warning", "true")
                 .addHeader("User-Agent", "UltraVigilance-Android")
                 .build()
-            chain.proceed(request)
+
+            Log.d(TAG, "🚀 HTTP ${request.method} -> ${request.url}")
+            val response = chain.proceed(request)
+            Log.d(TAG, "📥 HTTP ${response.code} <- ${request.url}")
+            response
         }
         .build()
 
