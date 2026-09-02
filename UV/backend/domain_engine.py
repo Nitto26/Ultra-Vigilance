@@ -21,6 +21,7 @@ from config import (
     SHARED_HOSTING_IMPERSONATION_BOOST
 )
 from schemas import ScanVerdictResponse
+from cross_channel_memory import threat_memory
 
 logger = logging.getLogger(__name__)
 
@@ -224,7 +225,7 @@ def check_subdomain_for_brand_impersonation(subdomain: str) -> List[str]:
 def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
     """
     Main orchestration function for domain inspection.
-    Fails open to SAFE on any unexpected exception.
+    Integrates with cross-channel smishing memory and fail-open resilience.
     """
     try:
         if not url or not isinstance(url, str):
@@ -232,13 +233,19 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
                 verdict="SAFE",
                 confidence=0.0,
                 reasons=[],
-                detail="Empty or malformed URL passed"
+                detail="Empty or malformed URL passed",
+                status_code=200
             )
 
         target_url = url.strip()
         reasons = []
         extracted_init = tldextract.extract(target_url)
         registered_init = f"{extracted_init.domain}.{extracted_init.suffix}".lower()
+
+        # Cross-Channel Check: Was this URL linked to an active SMS smishing campaign?
+        in_smish_campaign, campaign_note = threat_memory.check_url_in_sms_campaign(target_url)
+        if in_smish_campaign and campaign_note:
+            reasons.append(campaign_note)
 
         # Step 1: Expand URL Shorteners
         if is_shortened_url(registered_init):
@@ -252,7 +259,8 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
                     verdict="SUSPICIOUS",
                     confidence=0.65,
                     reasons=reasons,
-                    detail="Shortened URL with unresolvable destination"
+                    detail="Shortened URL with unresolvable destination",
+                    status_code=200
                 )
 
         # Step 2: Feature Extraction & ML Probability
@@ -278,6 +286,10 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
             prob = min(1.0, prob + NEW_DOMAIN_BOOST)
             age_days = age_info.get("age_days", 0)
             reasons.append(f"Domain registered {age_days} days ago (newly created)")
+
+        # Boost if linked to active smishing attack
+        if in_smish_campaign:
+            prob = max(prob, 0.92)
 
         # Step 4: Lexical Rule Tags
         if features_dict.get("is_suspicious_tld"):
@@ -308,14 +320,14 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
             verdict = "SAFE"
             detail = "Document/Message analyzed successfully - verified safe"
 
-        # Deduplicate reasons while preserving order
         unique_reasons = list(dict.fromkeys(reasons))
 
         return ScanVerdictResponse(
             verdict=verdict,
             confidence=confidence,
             reasons=unique_reasons,
-            detail=detail
+            detail=detail,
+            status_code=200
         )
     except Exception as e:
         logger.error(f"Unexpected error in get_domain_verdict for {url}: {e}")
@@ -323,5 +335,6 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
-            detail="Scan completed with fail-open fallback"
+            detail="Scan completed with fail-open fallback",
+            status_code=200
         )

@@ -2,7 +2,7 @@
 """
 FastAPI Backend for UV- Ultra Vigilance.
 Exposes real-time endpoints for Domain Heuristics, SMS Pattern Analysis, and Payment Checks
-with formatted request/response logging for live terminal monitoring.
+with cross-channel real-time threat communication and terminal logging.
 """
 import os
 import logging
@@ -17,8 +17,9 @@ from schemas import (
     ScanVerdictResponse,
     ScanDocumentRequest,
     ScanSmsRequest,
-    PaymentRequest
+    ScanPaymentRequest
 )
+from cross_channel_memory import threat_memory
 import domain_engine
 import sms_engine
 import payment_engine
@@ -52,7 +53,7 @@ except Exception as e:
 
 app = FastAPI(
     title="UV - Ultra Vigilance API",
-    description="Real-Time Cross-Vector Cyber Fraud & Phishing Detection Engine",
+    description="Cross-Channel Cyber Fraud, Smishing & Payment Interception Engine",
     version="1.0.0"
 )
 
@@ -75,49 +76,56 @@ async def global_exception_handler(request: Request, exc: Exception):
             "verdict": "SAFE",
             "confidence": 0.0,
             "reasons": [],
-            "detail": "Scan completed with fail-open fallback"
+            "detail": "Scan completed with fail-open fallback",
+            "status_code": 200
         }
     )
 
-# --- Helper for Terminal Inspection Logs ---
+# --- Helper for Terminal Inspection Logs (ASCII-safe for Windows cp1252) ---
 def log_transaction(endpoint: str, req_info: Dict[str, Any], res: ScanVerdictResponse):
-    print("\n" + "=" * 78)
-    print(f"📥 INCOMING REQUEST: {endpoint}")
-    for k, v in req_info.items():
-        print(f" • {k:<16}: {v}")
-    print("-" * 78)
-    verdict_badge = f"[{res.verdict}]"
-    print(f"📤 ENGINE RESPONSE:")
-    print(f" • Verdict / Result : {verdict_badge}")
-    print(f" • Confidence       : {res.confidence:.2f} ({res.confidence * 100:.1f}%)")
-    if res.reasons:
-        print(f" • Reasons          : {'; '.join(res.reasons)}")
-    if res.detail:
-        print(f" • Detail           : {res.detail}")
-    print("=" * 78 + "\n")
+    try:
+        print("\n" + "=" * 78)
+        print(f">> INCOMING REQUEST: {endpoint}")
+        for k, v in req_info.items():
+            if v:
+                print(f" * {k:<18}: {v}")
+        print("-" * 78)
+        verdict_badge = f"[{res.verdict}]"
+        print(f">> ENGINE RESPONSE:")
+        print(f" * Verdict / Result  : {verdict_badge}")
+        print(f" * Confidence        : {res.confidence:.2f} ({res.confidence * 100:.1f}%)")
+        if res.reasons:
+            print(f" * Reasons           : {'; '.join(res.reasons)}")
+        if res.detail:
+            print(f" * Detail            : {res.detail}")
+        print("=" * 78 + "\n")
+    except Exception as e:
+        logger.debug(f"Log printing skipped: {e}")
 
 # --- Endpoints ---
 
 @app.get("/health")
 def health_check():
-    """Sanity check endpoint reporting system status and model readiness."""
+    """Sanity check endpoint reporting system status, models, and threat memory."""
     return {
         "status": "ok",
         "domain_model_loaded": domain_model is not None,
-        "sms_model_loaded": sms_bundle is not None
+        "sms_model_loaded": sms_bundle is not None,
+        "active_threat_campaigns": len(threat_memory.recent_smish_events)
     }
 
 # Endpoint 1: Document & Domain Scanning
 @app.post("/scan-document", response_model=ScanVerdictResponse)
 @app.post("/scan-domain", response_model=ScanVerdictResponse)
 def scan_document(req: ScanDocumentRequest):
-    """Evaluates a URL against lexical heuristics, WHOIS recency, and XGBoost ML."""
+    """Evaluates a URL against lexical heuristics, WHOIS recency, and cross-channel SMS smishing memory."""
     if domain_model is None:
         res = ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
-            detail="Domain model unavailable"
+            detail="Domain model unavailable",
+            status_code=200
         )
     else:
         res = domain_engine.get_domain_verdict(req.url, domain_model)
@@ -141,7 +149,8 @@ def scan_sms(req: ScanSmsRequest):
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
-            detail="SMS model bundle unavailable"
+            detail="SMS model bundle unavailable",
+            status_code=200
         )
     else:
         res = sms_engine.get_sms_verdict(
@@ -158,22 +167,46 @@ def scan_sms(req: ScanSmsRequest):
     )
     return res
 
-# Endpoint 3: Payment Gateway & UPI Scanning
+# Endpoint 3: Payment Gateway & UPI Scanning (Direct Android UPI Intercept)
 @app.post("/scan-payment", response_model=ScanVerdictResponse)
-def scan_payment(req: PaymentRequest):
-    """Evaluates checkout gateway URLs and UPI identifiers for malicious vectors."""
-    res = payment_engine.check_payment_gateway(
-        upi_id=req.upi_id,
-        gateway_url=req.gateway_url,
-        domain_model=domain_model
-    )
+def scan_payment(req: ScanPaymentRequest):
+    """Evaluates UPI VPA parameters, transaction notes, and checkout gateway URLs."""
+    try:
+        vpa = req.get_vpa()
+        gateway = req.gateway_url or ""
 
-    log_transaction(
-        endpoint="POST /scan-payment",
-        req_info={"Target UPI ID": req.upi_id or "(None)", "Gateway URL": req.gateway_url or "(None)"},
-        res=res
-    )
-    return res
+        res = payment_engine.check_payment_gateway(
+            upi_id=vpa,
+            gateway_url=gateway,
+            domain_model=domain_model,
+            upi_uri=req.upi_uri,
+            pa=req.pa,
+            pn=req.pn,
+            am=req.am,
+            tn=req.tn
+        )
+
+        log_transaction(
+            endpoint="POST /scan-payment",
+            req_info={
+                "Payee VPA (pa)": vpa or "(None)",
+                "Payee Name (pn)": req.pn or "(None)",
+                "Amount (am)": req.am or "(None)",
+                "Note (tn)": req.tn or "(None)",
+                "Gateway URL": gateway or "(None)"
+            },
+            res=res
+        )
+        return res
+    except Exception as e:
+        logger.error(f"Explicit error in scan_payment: {e}", exc_info=True)
+        return ScanVerdictResponse(
+            verdict="SAFE",
+            confidence=0.0,
+            reasons=[],
+            detail="Scan completed with fail-open fallback",
+            status_code=200
+        )
 
 if __name__ == "__main__":
     import uvicorn

@@ -14,6 +14,7 @@ from config import (
     URGENCY_FINANCIAL_BOOST
 )
 from schemas import ScanVerdictResponse
+from cross_channel_memory import threat_memory
 import domain_engine
 
 logger = logging.getLogger(__name__)
@@ -92,7 +93,8 @@ def get_sms_verdict(
                 verdict="SAFE",
                 confidence=0.0,
                 reasons=[],
-                detail="Empty SMS message passed"
+                detail="Empty SMS message passed",
+                status_code=200
             )
 
         sms_res = score_sms(text, sender, sms_bundle)
@@ -122,11 +124,21 @@ def get_sms_verdict(
 
         unique_reasons = list(dict.fromkeys(all_reasons)) if confidence > SUSPICIOUS_THRESHOLD else []
 
+        # Cross-Channel Broadcast: Record threat into shared memory so Domain & Payment APIs know!
+        if confidence > SUSPICIOUS_THRESHOLD:
+            threat_memory.record_sms_threat(
+                sender=sender,
+                message=text,
+                url=url_found,
+                confidence=confidence
+            )
+
         return ScanVerdictResponse(
             verdict=verdict,
             confidence=confidence,
             reasons=unique_reasons,
-            detail=detail
+            detail=detail,
+            status_code=200
         )
     except Exception as e:
         logger.error(f"Unexpected error in get_sms_verdict: {e}")
@@ -134,5 +146,6 @@ def get_sms_verdict(
             verdict="SAFE",
             confidence=0.0,
             reasons=[],
-            detail="Scan completed with fail-open fallback"
+            detail="Scan completed with fail-open fallback",
+            status_code=200
         )

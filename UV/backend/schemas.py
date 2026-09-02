@@ -12,8 +12,9 @@ class ScanVerdictResponse(BaseModel):
     confidence: float = Field(..., ge=0.0, le=1.0, description="Risk level float from 0.0 to 1.0")
     reasons: List[str] = Field(default_factory=list, description="List of explanatory bullet strings")
     detail: Optional[str] = Field(default=None, description="Summary description string")
+    status_code: Optional[int] = Field(default=200, description="HTTP status code indicator")
 
-# Alias for backwards compatibility with previous internal references
+# Alias for backwards compatibility
 VerdictResponse = ScanVerdictResponse
 
 # Request Models
@@ -34,6 +35,18 @@ class ScanSmsRequest(BaseModel):
 class SMSRequest(ScanSmsRequest):
     pass
 
-class PaymentRequest(BaseModel):
-    upi_id: str = Field(default="", description="Target UPI VPA identifier")
-    gateway_url: str = Field(default="", description="Payment checkout or gateway URL")
+class ScanPaymentRequest(BaseModel):
+    upi_id: Optional[str] = Field(default="", description="Target UPI VPA identifier")
+    gateway_url: Optional[str] = Field(default="", description="Payment checkout or gateway URL")
+    upi_uri: Optional[str] = Field(default="", description="Full UPI Intent URI string (upi://pay?...)")
+    pa: Optional[str] = Field(default=None, description="Payee VPA address (e.g. merchant@upi)")
+    pn: Optional[str] = Field(default=None, description="Payee display name")
+    am: Optional[str] = Field(default=None, description="Transaction amount")
+    cu: Optional[str] = Field(default=None, description="Currency code (e.g. INR)")
+    tn: Optional[str] = Field(default=None, description="Transaction note")
+
+    def get_vpa(self) -> str:
+        return (self.pa or self.upi_id or "").strip()
+
+class PaymentRequest(ScanPaymentRequest):
+    pass
