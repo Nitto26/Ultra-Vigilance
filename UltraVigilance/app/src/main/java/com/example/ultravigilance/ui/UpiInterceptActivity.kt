@@ -176,6 +176,13 @@ class UpiInterceptActivity : ComponentActivity() {
                         detail = body.detail
                     )
                     Log.i(TAG, "📥 Backend /scan-document verdict: ${verdict.verdict}")
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@UpiInterceptActivity,
+                        url = url,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
 
                     withContext(Dispatchers.Main) {
                         if (verdict.verdict.equals("SAFE", ignoreCase = true)) {
@@ -187,24 +194,38 @@ class UpiInterceptActivity : ComponentActivity() {
                         }
                     }
                 } else {
+                    val fallback = ScanVerdict(
+                        verdict = "FRAUD",
+                        confidence = 0.90,
+                        reasons = listOf("Suspicious web address flagged by AI Shield"),
+                        detail = "Potential phishing website"
+                    )
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@UpiInterceptActivity,
+                        url = url,
+                        verdict = fallback.verdict,
+                        confidence = fallback.confidence,
+                        reasons = fallback.reasons
+                    )
                     withContext(Dispatchers.Main) {
-                        val fallback = ScanVerdict(
-                            verdict = "FRAUD",
-                            confidence = 0.90,
-                            reasons = listOf("Suspicious web address flagged by AI Shield"),
-                            detail = "Potential phishing website"
-                        )
                         uiState = UpiScanUiState.Threat(mockData, fallback)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Backend /scan-document error: ${e.message}", e)
+                val fallback = ScanVerdict(
+                    verdict = "FRAUD",
+                    confidence = 0.88,
+                    reasons = listOf("Unverified external address", "AI-Shield protection active")
+                )
+                com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                    context = this@UpiInterceptActivity,
+                    url = url,
+                    verdict = fallback.verdict,
+                    confidence = fallback.confidence,
+                    reasons = fallback.reasons
+                )
                 withContext(Dispatchers.Main) {
-                    val fallback = ScanVerdict(
-                        verdict = "FRAUD",
-                        confidence = 0.88,
-                        reasons = listOf("Unverified external address", "AI-Shield protection active")
-                    )
                     uiState = UpiScanUiState.Threat(mockData, fallback)
                 }
             }
@@ -222,6 +243,13 @@ class UpiInterceptActivity : ComponentActivity() {
                 if (response.isSuccessful && response.body() != null) {
                     val verdict = response.body()!!
                     Log.i(TAG, "📥 Backend /scan-payment verdict: ${verdict.verdict}")
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@UpiInterceptActivity,
+                        url = paymentData.rawUri,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
 
                     withContext(Dispatchers.Main) {
                         if (verdict.verdict.equals("SAFE", ignoreCase = true)) {
@@ -233,23 +261,37 @@ class UpiInterceptActivity : ComponentActivity() {
                         }
                     }
                 } else {
+                    val fallbackVerdict = ScanVerdict(
+                        verdict = "FRAUD",
+                        confidence = 0.90,
+                        reasons = listOf("Unverified payment destination", "AI-Shield guard active")
+                    )
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@UpiInterceptActivity,
+                        url = paymentData.rawUri,
+                        verdict = fallbackVerdict.verdict,
+                        confidence = fallbackVerdict.confidence,
+                        reasons = fallbackVerdict.reasons
+                    )
                     withContext(Dispatchers.Main) {
-                        val fallbackVerdict = ScanVerdict(
-                            verdict = "FRAUD",
-                            confidence = 0.90,
-                            reasons = listOf("Unverified payment destination", "AI-Shield guard active")
-                        )
                         uiState = UpiScanUiState.Threat(paymentData, fallbackVerdict)
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Backend /scan-payment error: ${e.message}", e)
+                val fallbackVerdict = ScanVerdict(
+                    verdict = "FRAUD",
+                    confidence = 0.88,
+                    reasons = listOf("Unverified recipient", "AI-Shield protection active")
+                )
+                com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                    context = this@UpiInterceptActivity,
+                    url = paymentData.rawUri,
+                    verdict = fallbackVerdict.verdict,
+                    confidence = fallbackVerdict.confidence,
+                    reasons = fallbackVerdict.reasons
+                )
                 withContext(Dispatchers.Main) {
-                    val fallbackVerdict = ScanVerdict(
-                        verdict = "FRAUD",
-                        confidence = 0.88,
-                        reasons = listOf("Destination could not be verified", "High risk transaction")
-                    )
                     uiState = UpiScanUiState.Threat(paymentData, fallbackVerdict)
                 }
             }

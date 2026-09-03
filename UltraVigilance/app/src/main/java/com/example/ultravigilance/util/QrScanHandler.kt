@@ -113,6 +113,13 @@ object QrScanHandler {
 
                 withContext(Dispatchers.Main) {
                     onScanStateChanged(false)
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = context,
+                        url = detected.paymentData.rawUri,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
                     val riskPct = Math.round(verdict.confidence * 100)
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
                         val reasonsStr = if (verdict.reasons.isNotEmpty()) {
@@ -181,6 +188,13 @@ object QrScanHandler {
 
                 withContext(Dispatchers.Main) {
                     onScanStateChanged(false)
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = context,
+                        url = detected.url,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
                     val riskPct = Math.round(verdict.confidence * 100)
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
                         val reasonsStr = if (verdict.reasons.isNotEmpty()) {
@@ -209,6 +223,14 @@ object QrScanHandler {
 
                 withContext(Dispatchers.Main) {
                     onScanStateChanged(false)
+                    com.example.ultravigilance.data.SecurityStatsManager.recordMessageScanned(
+                        context = context,
+                        sender = "QR Scanner",
+                        message = rawContent,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
                     val riskPct = Math.round(verdict.confidence * 100)
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
                         val reasonsStr = if (verdict.reasons.isNotEmpty()) {

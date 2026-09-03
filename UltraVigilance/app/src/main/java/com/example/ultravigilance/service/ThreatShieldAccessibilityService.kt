@@ -196,6 +196,14 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
                         ScanVerdict(verdict = "SAFE", confidence = 0.0, reasons = emptyList())
                     }
 
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@ThreatShieldAccessibilityService,
+                        url = detected.paymentData.rawUri,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
+
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
                         ShieldOverlayManager.showUpiThreatOverlay(
                             context = this@ThreatShieldAccessibilityService,
@@ -236,6 +244,14 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
                         Log.e(TAG, "Backend /scan-document error: ${e.message}", e)
                         ScanVerdict(verdict = "SAFE", confidence = 0.0, reasons = emptyList())
                     }
+
+                    com.example.ultravigilance.data.SecurityStatsManager.recordLinkScanned(
+                        context = this@ThreatShieldAccessibilityService,
+                        url = detected.url,
+                        verdict = verdict.verdict,
+                        confidence = verdict.confidence,
+                        reasons = verdict.reasons
+                    )
 
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
                         ShieldOverlayManager.showWebThreatOverlay(

@@ -2,27 +2,44 @@ package com.example.ultravigilance.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// UltraVigilance Cyber-Security Design System
-val CyberBg = Color(0xFF0A0F1D)
-val CyberSurface = Color(0xFF121A2D)
-val CyberSurfaceVariant = Color(0xFF1A243B)
-val CyberBorder = Color(0xFF22304E)
+// Google Workspace Dark Theme Design System
+val GoogleDarkBg = Color(0xFF131314)
+val GoogleDarkSurface = Color(0xFF1E1F20)
+val GoogleDarkSurfaceVariant = Color(0xFF28292A)
+val GoogleDarkBorder = Color(0xFF3C4043)
 
-val CyberCyan = Color(0xFF00E5FF)
-val CyberTeal = Color(0xFF06B6D4)
-val CyberIndigo = Color(0xFF6366F1)
-val CyberEmerald = Color(0xFF10B981)
-val CyberAmber = Color(0xFFF59E0B)
-val CyberCrimson = Color(0xFFEF4444)
+// Google Workspace Brand Signature Colors
+val GoogleBlue = Color(0xFF8AB4F8)
+val GoogleGreen = Color(0xFF81C995)
+val GoogleRed = Color(0xFFF28B82)
+val GoogleYellow = Color(0xFFFDD663)
 
-val CyberTextPrimary = Color(0xFFF8FAFC)
-val CyberTextSecondary = Color(0xFF94A3B8)
-val CyberTextMuted = Color(0xFF64748B)
+// Typography & Content
+val GoogleTextPrimary = Color(0xFFE8EAED)
+val GoogleTextSecondary = Color(0xFF9AA0A6)
+val GoogleTextMuted = Color(0xFF5F6368)
 
-val Purple80 = CyberCyan
-val PurpleGrey80 = CyberTextSecondary
-val Pink80 = CyberIndigo
+// Aliases for UltraVigilance UI
+val CyberBg = GoogleDarkBg
+val CyberSurface = GoogleDarkSurface
+val CyberSurfaceVariant = GoogleDarkSurfaceVariant
+val CyberBorder = GoogleDarkBorder
 
-val Purple40 = CyberTeal
-val PurpleGrey40 = CyberTextMuted
-val Pink40 = CyberIndigo
+val CyberCyan = GoogleBlue
+val CyberTeal = Color(0xFF78D9EC)
+val CyberIndigo = Color(0xFFA8C7FA)
+val CyberEmerald = GoogleGreen
+val CyberAmber = GoogleYellow
+val CyberCrimson = GoogleRed
+
+val CyberTextPrimary = GoogleTextPrimary
+val CyberTextSecondary = GoogleTextSecondary
+val CyberTextMuted = GoogleTextMuted
+
+val Purple80 = GoogleBlue
+val PurpleGrey80 = GoogleTextSecondary
+val Pink80 = GoogleRed
+
+val Purple40 = GoogleBlue
+val PurpleGrey40 = GoogleTextMuted
+val Pink40 = GoogleRed

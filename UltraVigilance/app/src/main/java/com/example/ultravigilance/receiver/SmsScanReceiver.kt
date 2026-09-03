@@ -191,6 +191,14 @@ class SmsScanReceiver : BroadcastReceiver() {
             try {
                 val verdict = scanMessage(sender, fullBody)
                 Log.d(TAG, "Verdict from live backend: ${verdict.verdict} for $sender")
+                com.example.ultravigilance.data.SecurityStatsManager.recordMessageScanned(
+                    context = context,
+                    sender = sender,
+                    message = fullBody,
+                    verdict = verdict.verdict,
+                    confidence = verdict.confidence,
+                    reasons = verdict.reasons
+                )
                 handleVerdict(context, sender, fullBody, verdict)
             } catch (t: Throwable) {
                 Log.e(TAG, "Error handling SMS verdict", t)
