@@ -15,6 +15,7 @@ from config import (
 )
 from schemas import ScanVerdictResponse
 from cross_channel_memory import threat_memory
+from reason_messages import get_display_messages
 import domain_engine
 
 logger = logging.getLogger(__name__)
@@ -120,9 +121,8 @@ def get_sms_verdict(
             detail = "Suspicious unverified sender or link pattern detected"
         else:
             verdict = "SAFE"
-            detail = "Message verified clean"
-
         unique_reasons = list(dict.fromkeys(all_reasons)) if confidence > SUSPICIOUS_THRESHOLD else []
+        display_reasons = get_display_messages(unique_reasons)
 
         # Cross-Channel Broadcast: Record threat into shared memory so Domain & Payment APIs know!
         if confidence > SUSPICIOUS_THRESHOLD:
@@ -137,15 +137,20 @@ def get_sms_verdict(
             verdict=verdict,
             confidence=confidence,
             reasons=unique_reasons,
+            display_reasons=display_reasons,
             detail=detail,
+            source="sms",
             status_code=200
         )
     except Exception as e:
         logger.error(f"Unexpected error in get_sms_verdict: {e}")
+        fallback_reasons = ["scan_error_failed_open"]
         return ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
-            reasons=[],
+            reasons=fallback_reasons,
+            display_reasons=get_display_messages(fallback_reasons),
             detail="Scan completed with fail-open fallback",
+            source="sms",
             status_code=200
         )

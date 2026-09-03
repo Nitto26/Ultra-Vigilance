@@ -18,42 +18,55 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
 /**
- * Universal Screen & Tap Interception Accessibility Service.
+ * Intelligent Link Click & Browser Launch Interceptor.
  *
- * Intercepts tapped elements across all apps (e.g. WhatsApp, SMS, Telegram, Browsers)
- * and detects:
- *   - Section 1: UPI Payment Links & Handles
- *   - Section 2: General Web Links / Phishing URLs
+ * Catches links tapped in WhatsApp, SMS (Google Messages), Telegram, and Browsers.
+ * Evaluates with live AI backend and displays Threat Shield Overlay if fraud is detected.
  */
 class ThreatShieldAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "ThreatAccessibility"
 
-        // Cache of recently intercepted targets to avoid re-triggering within 3 seconds
+        // Deduplication cache to prevent re-scanning the same target within 2 seconds
         private val recentInterceptions = LinkedHashMap<String, Long>()
+
+        // Common Android Web Browsers & Custom Tabs
+        private val BROWSER_PACKAGES = setOf(
+            "com.android.chrome",
+            "org.chromium.chrome",
+            "com.google.android.apps.chrome",
+            "com.sec.android.app.sbrowser",
+            "org.mozilla.firefox",
+            "com.opera.browser",
+            "com.microsoft.emmx",
+            "com.brave.browser",
+            "com.duckduckgo.mobile.android"
+        )
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.i(TAG, "🟢 ThreatShieldAccessibilityService CONNECTED and ACTIVE in Android OS!")
+        Log.i(TAG, "🟢 ThreatShieldAccessibilityService CONNECTED & ACTIVE")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
         val pkgName = event.packageName?.toString() ?: ""
-        // Do not intercept actions inside UltraVigilance itself
         if (pkgName == applicationContext.packageName) return
 
         when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_CLICKED,
-            AccessibilityEvent.TYPE_VIEW_LONG_CLICKED,
-            AccessibilityEvent.TYPE_VIEW_SELECTED,
-            AccessibilityEvent.TYPE_VIEW_FOCUSED,
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED,
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                inspectEvent(event)
+            // Case 1: Direct Click on a Link or View
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                inspectClickedView(event)
+            }
+
+            // Case 2: Browser / Custom Tab Opened from a WhatsApp or SMS Link Tap
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                if (BROWSER_PACKAGES.contains(pkgName)) {
+                    inspectBrowserWindow(event)
+                }
             }
         }
     }
@@ -62,95 +75,82 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
         Log.w(TAG, "ThreatShieldAccessibilityService interrupted")
     }
 
-    private fun inspectEvent(event: AccessibilityEvent) {
-        val extractedCharSequences = mutableListOf<CharSequence>()
+    private fun inspectClickedView(event: AccessibilityEvent) {
+        val extractedLinks = mutableListOf<CharSequence>()
 
-        // 1. Text directly from event items
+        // 1. Check for URLSpans in clicked text
         event.text?.forEach { charSeq ->
-            if (!charSeq.isNullOrBlank()) {
-                extractedCharSequences.add(charSeq)
+            if (charSeq is Spanned) {
+                val urlSpans = charSeq.getSpans(0, charSeq.length, URLSpan::class.java)
+                for (span in urlSpans) {
+                    val spanUrl = span.url
+                    if (!spanUrl.isNullOrBlank()) extractedLinks.add(spanUrl)
+                }
             }
         }
 
-        // 2. Content description
-        event.contentDescription?.let {
-            if (it.isNotBlank()) extractedCharSequences.add(it)
-        }
-
-        // 3. Node hierarchy text from source view
+        // 2. Check clicked node itself
         val sourceNode = event.source
         if (sourceNode != null) {
-            extractNodeCharSequences(sourceNode, extractedCharSequences, depth = 0)
-            
-            // Also inspect parent container if available
-            sourceNode.parent?.let { parentNode ->
-                extractNodeCharSequences(parentNode, extractedCharSequences, depth = 0)
-            }
+            extractLinksFromNode(sourceNode, extractedLinks, depth = 0)
         }
 
-        // 4. Check if any extracted text is a UPI or Web link
-        for (item in extractedCharSequences) {
+        // 3. Classify and handle detected link
+        for (item in extractedLinks) {
             val detected = LinkClassifier.classify(item)
             if (detected != null) {
-                Log.i(TAG, "🎯 Found link in clicked node: $item")
+                Log.i(TAG, "🎯 Clicked link detected in app: $item")
                 handleDetectedLink(detected)
                 return
             }
         }
+    }
 
-        // 5. Fallback: If nothing was in the event node, inspect root active window (WhatsApp message rows)
-        if (event.eventType == AccessibilityEvent.TYPE_VIEW_CLICKED ||
-            event.eventType == AccessibilityEvent.TYPE_VIEW_LONG_CLICKED ||
-            event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
-            try {
-                val rootNode = rootInActiveWindow
-                if (rootNode != null) {
-                    val rootList = mutableListOf<CharSequence>()
-                    extractNodeCharSequences(rootNode, rootList, depth = 0)
-                    for (item in rootList) {
-                        val detected = LinkClassifier.classify(item)
-                        if (detected != null) {
-                            Log.i(TAG, "🎯 Found link in active window: $item")
-                            handleDetectedLink(detected)
-                            return
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Error inspecting rootInActiveWindow: ${e.message}")
+    private fun inspectBrowserWindow(event: AccessibilityEvent) {
+        val rootNode = rootInActiveWindow ?: return
+        val extractedLinks = mutableListOf<CharSequence>()
+        extractLinksFromNode(rootNode, extractedLinks, depth = 0)
+
+        for (item in extractedLinks) {
+            val detected = LinkClassifier.classify(item)
+            if (detected != null) {
+                Log.i(TAG, "🌐 Browser / Custom Tab opened target: $item")
+                handleDetectedLink(detected)
+                return
             }
         }
     }
 
-
-    private fun extractNodeCharSequences(
+    private fun extractLinksFromNode(
         node: AccessibilityNodeInfo,
         list: MutableList<CharSequence>,
         depth: Int
     ) {
-        if (depth > 5) return // Limit depth for optimal performance
+        if (depth > 12) return
 
         node.text?.let { charSeq ->
             if (charSeq.isNotBlank()) {
-                list.add(charSeq)
-                // Check if text is Spannable containing URLSpans
                 if (charSeq is Spanned) {
                     val urlSpans = charSeq.getSpans(0, charSeq.length, URLSpan::class.java)
                     for (span in urlSpans) {
                         val spanUrl = span.url
                         if (!spanUrl.isNullOrBlank()) list.add(spanUrl)
                     }
+                } else {
+                    val textStr = charSeq.toString()
+                    if (textStr.contains("http://", ignoreCase = true) ||
+                        textStr.contains("https://", ignoreCase = true) ||
+                        textStr.contains("upi://", ignoreCase = true)
+                    ) {
+                        list.add(charSeq)
+                    }
                 }
             }
         }
 
-        node.contentDescription?.let {
-            if (it.isNotBlank()) list.add(it)
-        }
-
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            extractNodeCharSequences(child, list, depth + 1)
+            extractLinksFromNode(child, list, depth + 1)
         }
     }
 
@@ -163,7 +163,7 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
         val now = System.currentTimeMillis()
         synchronized(recentInterceptions) {
             val lastTime = recentInterceptions[identifier]
-            if (lastTime != null && now - lastTime < 3000) {
+            if (lastTime != null && now - lastTime < 2500) {
                 return // Deduplicate rapid click triggers
             }
             recentInterceptions[identifier] = now
@@ -177,7 +177,7 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
             // SECTION 1: UPI PAYMENT LINK INTERCEPTION
             // ==========================================
             is DetectedLink.Upi -> {
-                Log.d(TAG, "🚨 Intercepted on-screen UPI payment tap: ${detected.paymentData.rawUri}")
+                Log.i(TAG, "🚨 Intercepted UPI payment click: ${detected.paymentData.rawUri}")
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val verdict = try {
@@ -187,39 +187,21 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
                         } else {
                             ScanVerdict(
                                 verdict = "FRAUD",
-                                confidence = 0.94,
-                                reasons = listOf(
-                                    "On-screen payment trigger flagged by AI threat engine",
-                                    "Unverified payee (${detected.detectionSource})"
-                                )
+                                confidence = 0.95,
+                                reasons = listOf("Payment link recipient unverified by banking records")
                             )
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Backend /scan-payment query failed: ${e.message}", e)
-                        ScanVerdict(
-                            verdict = "FRAUD",
-                            confidence = 0.90,
-                            reasons = listOf(
-                                "On-screen tap on unverified UPI payment trigger",
-                                "Offline threat defense active (${detected.detectionSource})"
-                            )
-                        )
+                        Log.e(TAG, "Backend /scan-payment error: ${e.message}", e)
+                        ScanVerdict(verdict = "SAFE", confidence = 0.0, reasons = emptyList())
                     }
 
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
-                        if (ShieldOverlayManager.hasOverlayPermission(this@ThreatShieldAccessibilityService)) {
-                            ShieldOverlayManager.showUpiThreatOverlay(
-                                context = this@ThreatShieldAccessibilityService,
-                                paymentData = detected.paymentData,
-                                verdict = verdict
-                            )
-                        } else {
-                            val intent = Intent(this@ThreatShieldAccessibilityService, UpiInterceptActivity::class.java).apply {
-                                data = android.net.Uri.parse(detected.paymentData.rawUri)
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                            }
-                            startActivity(intent)
-                        }
+                        ShieldOverlayManager.showUpiThreatOverlay(
+                            context = this@ThreatShieldAccessibilityService,
+                            paymentData = detected.paymentData,
+                            verdict = verdict
+                        )
                     }
                 }
             }
@@ -228,7 +210,7 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
             // SECTION 2: GENERAL WEB LINK INTERCEPTION
             // ==========================================
             is DetectedLink.Web -> {
-                Log.d(TAG, "🌐 Intercepted on-screen Web link tap: ${detected.url} (${detected.host})")
+                Log.i(TAG, "🌐 Intercepted Web link click: ${detected.url}")
 
                 CoroutineScope(Dispatchers.IO).launch {
                     val verdict = try {
@@ -238,32 +220,21 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
                         if (response.isSuccessful && response.body() != null) {
                             val body = response.body()!!
                             ScanVerdict(
-                                verdict = body.verdict ?: "SUSPICIOUS",
-                                confidence = body.confidence ?: 0.85,
-                                reasons = body.reasons ?: listOf(body.detail ?: "Web threat identified by AI scanner"),
+                                verdict = body.verdict ?: "SAFE",
+                                confidence = body.confidence ?: 0.0,
+                                reasons = body.reasons ?: listOf(body.detail ?: "Web scan completed"),
                                 detail = body.detail
                             )
                         } else {
                             ScanVerdict(
                                 verdict = "FRAUD",
                                 confidence = 0.90,
-                                reasons = listOf(
-                                    "External domain flagged by AI threat engine",
-                                    if (detected.isShortener) "Masked shortlink redirector detected (${detected.host})" else "Unverified web address"
-                                )
+                                reasons = listOf("External domain flagged by AI threat engine")
                             )
                         }
                     } catch (e: Exception) {
-                        Log.e(TAG, "Backend /scan-document query failed: ${e.message}", e)
-                        ScanVerdict(
-                            verdict = "FRAUD",
-                            confidence = 0.88,
-                            reasons = listOf(
-                                "Suspicious web link tapped in active app",
-                                if (detected.isShortener) "Masked URL redirector detected (${detected.host})" else "Unverified external domain",
-                                "Protected by AI-Shield Offline Monitor"
-                            )
-                        )
+                        Log.e(TAG, "Backend /scan-document error: ${e.message}", e)
+                        ScanVerdict(verdict = "SAFE", confidence = 0.0, reasons = emptyList())
                     }
 
                     if (verdict.verdict.equals("FRAUD", ignoreCase = true) || verdict.verdict.equals("SUSPICIOUS", ignoreCase = true)) {
@@ -275,7 +246,6 @@ class ThreatShieldAccessibilityService : AccessibilityService() {
                     }
                 }
             }
-
         }
     }
 }

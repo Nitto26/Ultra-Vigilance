@@ -15,13 +15,27 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
-
-
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="upi" />
         </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="http" />
+        </intent>
+        <package android:name="com.android.chrome" />
+        <package android:name="com.google.android.apps.chrome" />
+        <package android:name="org.mozilla.firefox" />
+        <package android:name="com.sec.android.app.sbrowser" />
+        <package android:name="com.microsoft.emmx" />
+        <package android:name="com.opera.browser" />
+        <package android:name="com.brave.browser" />
+        <package android:name="com.duckduckgo.mobile.android" />
     </queries>
 
     <application
@@ -33,6 +47,7 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.UltraVigilance">
+        
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -40,43 +55,36 @@
             android:theme="@style/Theme.UltraVigilance">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
-
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!-- Primary Link Interceptor: Evaluates with backend BEFORE opening browser/payment app -->
         <activity
             android:name=".ui.UpiInterceptActivity"
             android:exported="true"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.UltraVigilance">
-            <!-- 1. Raw upi:// scheme (with and without host=pay for maximum intent matching) -->
-            <intent-filter>
-                <action android:name="android.intent.action.VIEW" />
-                <category android:name="android.intent.category.DEFAULT" />
-                <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="upi" android:host="pay" />
-            </intent-filter>
-            <intent-filter>
+            
+            <!-- 1. Intercept UPI links -->
+            <intent-filter android:priority="999">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="upi" />
             </intent-filter>
 
-
-            <!-- 2. UPI Vendor Shortlinks & Web Gateways -->
-            <intent-filter>
+            <!-- 2. Intercept general Web browsing links -->
+            <intent-filter android:priority="999">
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
-                <data android:scheme="https" android:host="gpay.app.goo.gl" />
-                <data android:scheme="https" android:host="phon.pe" />
-                <data android:scheme="https" android:host="p.paytm.me" />
-                <data android:scheme="https" android:host="pay.google.com" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
             </intent-filter>
         </activity>
-
 
         <receiver
             android:name=".receiver.SmsScanReceiver"
@@ -96,6 +104,7 @@
             </intent-filter>
         </service>
 
+        <!-- System Accessibility Service intercepts on-screen taps in background before apps open -->
         <service
             android:name=".service.ThreatShieldAccessibilityService"
             android:label="@string/accessibility_service_label"
@@ -109,6 +118,5 @@
                 android:resource="@xml/accessibility_service_config" />
         </service>
     </application>
-
 
 </manifest>

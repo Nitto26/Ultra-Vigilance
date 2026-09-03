@@ -1,12 +1,15 @@
 {
     "manifest_version": 3,
-    "name": "AI-Shield",
+    "name": "UV Guard",
     "version": "1.0.0",
     "description": "Real-time phishing/domain fraud warnings while you browse.",
     "permissions": [
         "webNavigation",
         "activeTab",
-        "storage"
+        "storage",
+        "notifications",
+        "scripting",
+        "tabs"
     ],
     "host_permissions": [
         "https://*/*",
@@ -27,6 +30,6 @@
         }
     ],
     "action": {
-        "default_title": "AI-Shield"
+        "default_title": "UV Guard"
     }
 }

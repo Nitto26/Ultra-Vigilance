@@ -36,8 +36,7 @@ object UpiLauncher {
     }
 
     /**
-     * Launches the real UPI application to complete payment.
-     * Returns true if successfully launched or chooser shown, false if no UPI app found.
+     * Launches the real UPI application directly without triggering OS app suggestion choosers.
      */
     fun launchGenuineUpiApp(context: Context, upiUri: String): Boolean {
         val externalApps = getExternalUpiApps(context, upiUri)
@@ -48,34 +47,13 @@ object UpiLauncher {
         }
 
         try {
-            if (externalApps.size == 1) {
-                // Exactly one UPI app installed: Launch directly
-                val target = externalApps.first().activityInfo
-                val directIntent = Intent(Intent.ACTION_VIEW, Uri.parse(upiUri)).apply {
-                    component = ComponentName(target.packageName, target.name)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(directIntent)
-                return true
-            }
-
-            // Multiple UPI apps installed: Create chooser excluding this app
-            val targetIntents = externalApps.map { resolveInfo ->
-                Intent(Intent.ACTION_VIEW, Uri.parse(upiUri)).apply {
-                    setClassName(resolveInfo.activityInfo.packageName, resolveInfo.activityInfo.name)
-                    setPackage(resolveInfo.activityInfo.packageName)
-                }
-            }.toMutableList()
-
-            val initialIntent = targetIntents.removeAt(0)
-            val chooserIntent = Intent.createChooser(initialIntent, "Pay with:").apply {
-                if (targetIntents.isNotEmpty()) {
-                    putExtra(Intent.EXTRA_INITIAL_INTENTS, targetIntents.toTypedArray())
-                }
+            // Directly launch the primary/default installed UPI app without creating a chooser
+            val target = externalApps.first().activityInfo
+            val directIntent = Intent(Intent.ACTION_VIEW, Uri.parse(upiUri)).apply {
+                component = ComponentName(target.packageName, target.name)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-
-            context.startActivity(chooserIntent)
+            context.startActivity(directIntent)
             return true
         } catch (e: Exception) {
             Log.e(TAG, "Failed to launch external UPI app", e)

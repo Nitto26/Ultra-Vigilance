@@ -119,6 +119,7 @@ def health_check():
 @app.post("/scan-domain", response_model=ScanVerdictResponse)
 def scan_document(req: ScanDocumentRequest):
     """Evaluates a URL against lexical heuristics, WHOIS recency, and cross-channel SMS smishing memory."""
+    target_url = req.get_url()
     if domain_model is None:
         res = ScanVerdictResponse(
             verdict="SAFE",
@@ -128,11 +129,11 @@ def scan_document(req: ScanDocumentRequest):
             status_code=200
         )
     else:
-        res = domain_engine.get_domain_verdict(req.url, domain_model)
+        res = domain_engine.get_domain_verdict(target_url, domain_model)
 
     log_transaction(
         endpoint="POST /scan-document",
-        req_info={"Target URL": req.url},
+        req_info={"Target URL": target_url},
         res=res
     )
     return res

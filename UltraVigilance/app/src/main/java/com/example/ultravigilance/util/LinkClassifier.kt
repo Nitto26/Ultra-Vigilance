@@ -39,18 +39,18 @@ object LinkClassifier {
     )
 
     private val SHORTENER_DOMAINS = setOf(
-        "bit.ly", "tinyurl.com", "t.co", "is.gd", "buff.ly", "ow.ly", "cutt.ly", "rb.gy"
+        "bit.ly", "tinyurl.com", "t.co", "is.gd", "buff.ly", "ow.ly", "cutt.ly", "rb.gy", "tiny.cc", "shorturl.at"
     )
 
     private val UPI_VENDOR_DOMAINS = setOf(
         "gpay.app.goo.gl", "phon.pe", "p.paytm.me", "pay.google.com"
     )
 
+    // Regex for bare domains (e.g. hdfc-kyc.xyz/auth, sbi.top, test.online, etc.)
     private val DOMAIN_REGEX = Pattern.compile(
-        "\\b((?:gpay\\.app\\.goo\\.gl|phon\\.pe|p\\.paytm\\.me|pay\\.google\\.com|bit\\.ly|tinyurl\\.com|t\\.co|is\\.gd)[a-zA-Z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]*)",
+        "\\b([a-zA-Z0-9\\-]{2,63}\\.(?:com|org|net|xyz|top|site|online|club|app|dev|in|co|us|sh|ly|me|cc|biz|info|live|link|guru|pw|tech|store)(?:/[a-zA-Z0-9\\-._~:/?#\\[\\]@!$&'()*+,;=%]*)?)\\b",
         Pattern.CASE_INSENSITIVE
     )
-
 
     /**
      * Inspects a CharSequence or clicked content to classify into UPI or Web Link.
@@ -114,11 +114,11 @@ object LinkClassifier {
             )
         }
 
-        // 2c. Check for domain-style vendor or web links without scheme (e.g. gpay.app.goo.gl/... or bit.ly/...)
+        // 3. Check for bare domain-style vendor or web links without scheme (e.g. hdfc-kyc.top/auth, bit.ly/...)
         val domainMatcher = DOMAIN_REGEX.matcher(trimmed)
         if (domainMatcher.find()) {
             val matchedDomain = cleanUrl(domainMatcher.group(1) ?: trimmed)
-            val fullUrl = "https://$matchedDomain"
+            val fullUrl = if (matchedDomain.startsWith("http://") || matchedDomain.startsWith("https://")) matchedDomain else "https://$matchedDomain"
             val host = extractHost(fullUrl).lowercase()
 
             if (UPI_VENDOR_DOMAINS.contains(host)) {
@@ -138,9 +138,8 @@ object LinkClassifier {
             )
         }
 
-        // 3. Search for standalone UPI VPA handles (e.g. "Send money to fraudster@okaxis")
+        // 4. Search for standalone UPI VPA handles (e.g. "Send money to fraudster@okaxis")
         val vpaMatcher = UPI_VPA_REGEX.matcher(trimmed)
-
         if (vpaMatcher.find()) {
             val vpa = vpaMatcher.group(1)
             val mockUpiUri = "upi://pay?pa=$vpa&pn=${vpa?.substringBefore('@') ?: "Payee"}"

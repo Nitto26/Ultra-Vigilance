@@ -71,59 +71,51 @@ object ShieldOverlayManager {
         paymentData: UpiPaymentData,
         verdict: ScanVerdict
     ) {
-        if (!hasOverlayPermission(context)) {
-            Log.w(TAG, "Overlay permission not granted. Launching foreground UpiInterceptActivity fallback.")
+        val appContext = context.applicationContext
+
+        mainHandler.post {
+            dismissOverlay(appContext)
+
+            if (hasOverlayPermission(appContext)) {
+                try {
+                    val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    } else {
+                        @Suppress("DEPRECATION")
+                        WindowManager.LayoutParams.TYPE_PHONE
+                    }
+
+                    val params = WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        overlayType,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT
+                    ).apply {
+                        gravity = Gravity.CENTER
+                    }
+
+                    val cardView = buildUpiCardView(appContext, paymentData, verdict)
+                    windowManager.addView(cardView, params)
+                    activeOverlayView = cardView
+                    Log.d(TAG, "UPI Threat Shield overlay added to window.")
+                    return@post
+                } catch (e: Exception) {
+                    Log.e(TAG, "WindowManager overlay addView failed: ${e.message}", e)
+                }
+            }
+
+            // Fallback: Launch standalone threat screen immediately
             try {
-                val intent = Intent(context, com.example.ultravigilance.ui.UpiInterceptActivity::class.java).apply {
+                val intent = Intent(appContext, com.example.ultravigilance.ui.UpiInterceptActivity::class.java).apply {
                     data = android.net.Uri.parse(paymentData.rawUri)
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 }
-                context.startActivity(intent)
+                appContext.startActivity(intent)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to launch fallback UpiInterceptActivity", e)
-            }
-            return
-        }
-
-        mainHandler.post {
-            dismissOverlay(context)
-
-            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
-            }
-
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                overlayType,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                        WindowManager.LayoutParams.FLAG_DIM_BEHIND,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.CENTER
-                dimAmount = 0.65f
-            }
-
-            val cardView = buildUpiCardView(context, paymentData, verdict)
-            try {
-                windowManager.addView(cardView, params)
-                activeOverlayView = cardView
-                Log.d(TAG, "UPI Threat Shield overlay added to window.")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to display UPI threat overlay: ${e.message}", e)
-                // Fallback to activity if WindowManager fails
-                try {
-                    val intent = Intent(context, com.example.ultravigilance.ui.UpiInterceptActivity::class.java).apply {
-                        data = android.net.Uri.parse(paymentData.rawUri)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(intent)
-                } catch (_: Exception) {}
+                Log.e(TAG, "Failed to launch fallback threat screen", e)
             }
         }
     }
@@ -136,44 +128,52 @@ object ShieldOverlayManager {
         webLink: DetectedLink.Web,
         verdict: ScanVerdict
     ) {
-        if (!hasOverlayPermission(context)) {
-            Log.w(TAG, "Overlay permission not granted. Showing high-priority notification alert.")
-            postWebAlertNotification(context, webLink, verdict)
-            return
-        }
-
+        val appContext = context.applicationContext
 
         mainHandler.post {
-            dismissOverlay(context)
+            dismissOverlay(appContext)
 
-            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            } else {
-                @Suppress("DEPRECATION")
-                WindowManager.LayoutParams.TYPE_PHONE
+            if (hasOverlayPermission(appContext)) {
+                try {
+                    val windowManager = appContext.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                    } else {
+                        @Suppress("DEPRECATION")
+                        WindowManager.LayoutParams.TYPE_PHONE
+                    }
+
+                    val params = WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.WRAP_CONTENT,
+                        overlayType,
+                        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                        PixelFormat.TRANSLUCENT
+                    ).apply {
+                        gravity = Gravity.CENTER
+                    }
+
+                    val cardView = buildWebCardView(appContext, webLink, verdict)
+                    windowManager.addView(cardView, params)
+                    activeOverlayView = cardView
+                    Log.d(TAG, "Web Threat Shield overlay added to window.")
+                    return@post
+                } catch (e: Exception) {
+                    Log.e(TAG, "WindowManager web overlay failed: ${e.message}", e)
+                }
             }
 
-            val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                overlayType,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                        WindowManager.LayoutParams.FLAG_DIM_BEHIND,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.CENTER
-                dimAmount = 0.65f
-            }
-
-            val cardView = buildWebCardView(context, webLink, verdict)
+            // Fallback: Launch standalone threat screen immediately
             try {
-                windowManager.addView(cardView, params)
-                activeOverlayView = cardView
-                Log.d(TAG, "Web Threat Shield overlay added to window.")
+                val intent = Intent(appContext, com.example.ultravigilance.ui.UpiInterceptActivity::class.java).apply {
+                    data = Uri.parse(webLink.url)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                }
+                appContext.startActivity(intent)
             } catch (e: Exception) {
-                Log.e(TAG, "Failed to display web threat overlay: ${e.message}", e)
+                Log.e(TAG, "Failed to launch fallback threat screen for web link", e)
+                postWebAlertNotification(appContext, webLink, verdict)
             }
         }
     }
@@ -200,6 +200,33 @@ object ShieldOverlayManager {
             }
         }
 
+        // Top Header Bar with Close Button
+        val topBar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val closeBtn = TextView(context).apply {
+            text = "✕ Close"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#B71C1C"))
+            val btnPad = dpToPx(context, 8)
+            setPadding(btnPad, btnPad / 2, btnPad, btnPad / 2)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#FFCDD2"))
+                cornerRadius = dpToPx(context, 12).toFloat()
+            }
+            setOnClickListener {
+                dismissOverlay(context)
+            }
+        }
+        topBar.addView(closeBtn)
+        container.addView(topBar)
+
         // Title Badge
         val titleText = TextView(context).apply {
             text = "🚨 AI-SHIELD: UPI PAYMENT BLOCKED"
@@ -207,7 +234,7 @@ object ShieldOverlayManager {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#B71C1C"))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dpToPx(context, 6))
+            setPadding(0, dpToPx(context, 6), 0, dpToPx(context, 6))
         }
         container.addView(titleText)
 
@@ -280,26 +307,46 @@ object ShieldOverlayManager {
         }
         container.addView(reasonsBox)
 
-        // Action Button
-        val blockButton = Button(context).apply {
-            text = "🛡 Block & Return to Safety"
-            textSize = 15f
+        // Option 1: Back to Safety
+        val safeButton = Button(context).apply {
+            text = "🛡️ Back to Safety"
+            textSize = 14f
             typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
+            setTextColor(Color.parseColor("#0A0F1D"))
             background = GradientDrawable().apply {
-                setColor(Color.parseColor("#D32F2F"))
+                setColor(Color.parseColor("#10B981"))
                 cornerRadius = dpToPx(context, 12).toFloat()
             }
-            val topMargin = dpToPx(context, 18)
+            val topMargin = dpToPx(context, 16)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(context, 50)
+                dpToPx(context, 46)
             ).apply { setMargins(0, topMargin, 0, 0) }
             setOnClickListener {
                 dismissOverlay(context)
             }
         }
-        container.addView(blockButton)
+        container.addView(safeButton)
+
+        // Option 2: Proceed at your own risk
+        val proceedButton = TextView(context).apply {
+            text = "⚠️ Proceed at your own risk"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#D32F2F"))
+            gravity = Gravity.CENTER
+            val topMargin = dpToPx(context, 8)
+            setPadding(0, dpToPx(context, 6), 0, dpToPx(context, 6))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, topMargin, 0, 0) }
+            setOnClickListener {
+                dismissOverlay(context)
+                UpiLauncher.launchGenuineUpiApp(context, paymentData.rawUri)
+            }
+        }
+        container.addView(proceedButton)
 
         rootLayout.addView(container)
         return rootLayout
@@ -327,6 +374,33 @@ object ShieldOverlayManager {
             }
         }
 
+        // Top Header Bar with Close Button
+        val topBar = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.END
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            )
+        }
+        val closeBtn = TextView(context).apply {
+            text = "✕ Close"
+            textSize = 13f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#E65100"))
+            val btnPad = dpToPx(context, 8)
+            setPadding(btnPad, btnPad / 2, btnPad, btnPad / 2)
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#FFE0B2"))
+                cornerRadius = dpToPx(context, 12).toFloat()
+            }
+            setOnClickListener {
+                dismissOverlay(context)
+            }
+        }
+        topBar.addView(closeBtn)
+        container.addView(topBar)
+
         // Title Badge
         val titleText = TextView(context).apply {
             text = "🌐 AI-SHIELD: SUSPICIOUS LINK INTERCEPTED"
@@ -334,7 +408,7 @@ object ShieldOverlayManager {
             typeface = Typeface.DEFAULT_BOLD
             setTextColor(Color.parseColor("#E65100"))
             gravity = Gravity.CENTER
-            setPadding(0, 0, 0, dpToPx(context, 6))
+            setPadding(0, dpToPx(context, 6), 0, dpToPx(context, 6))
         }
         container.addView(titleText)
 
@@ -355,75 +429,84 @@ object ShieldOverlayManager {
             val pad = dpToPx(context, 14)
             setPadding(pad, pad, pad, pad)
             background = GradientDrawable().apply {
-                setColor(Color.WHITE)
+                setColor(Color.parseColor("#FFFFFF"))
                 cornerRadius = dpToPx(context, 12).toFloat()
             }
         }
 
-        addDetailRow(context, detailsBox, "Target Host", webLink.host)
-        addDetailRow(context, detailsBox, "URL", webLink.url)
-        if (webLink.isShortener) {
-            addDetailRow(context, detailsBox, "Type", "URL Shortener / Redirector")
-        }
+        addDetailRow(context, detailsBox, "Target URL", webLink.url)
+        addDetailRow(context, detailsBox, "Host Domain", webLink.host)
         container.addView(detailsBox)
 
-        // Threat reasons box
-        val reasonsBox = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            val pad = dpToPx(context, 12)
-            setPadding(pad, pad, pad, pad)
-            val topMargin = dpToPx(context, 12)
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-            ).apply { setMargins(0, topMargin, 0, 0) }
+        // Reasons Box
+        if (verdict.reasons.isNotEmpty()) {
+            val reasonsBox = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                val pad = dpToPx(context, 12)
+                setPadding(pad, pad, pad, pad)
+                val topMargin = dpToPx(context, 12)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+                ).apply { setMargins(0, topMargin, 0, 0) }
+                background = GradientDrawable().apply {
+                    setColor(Color.parseColor("#FFF3E0"))
+                    cornerRadius = dpToPx(context, 12).toFloat()
+                }
+            }
+
+            for (r in verdict.reasons) {
+                val rText = TextView(context).apply {
+                    text = "• $r"
+                    textSize = 12f
+                    setTextColor(Color.parseColor("#4E342E"))
+                    setPadding(0, dpToPx(context, 2), 0, dpToPx(context, 2))
+                }
+                reasonsBox.addView(rText)
+            }
+            container.addView(reasonsBox)
+        }
+
+        // Option 1: Back to Safety
+        val safeButton = Button(context).apply {
+            text = "🛡️ Back to Safety"
+            textSize = 14f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#0A0F1D"))
             background = GradientDrawable().apply {
-                setColor(Color.WHITE)
+                setColor(Color.parseColor("#10B981"))
                 cornerRadius = dpToPx(context, 12).toFloat()
             }
-        }
-
-        val reasonsHeader = TextView(context).apply {
-            text = "RISK BREAKDOWN:"
-            textSize = 11f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.parseColor("#E65100"))
-            setPadding(0, 0, 0, dpToPx(context, 4))
-        }
-        reasonsBox.addView(reasonsHeader)
-
-        val reasons = if (verdict.reasons.isNotEmpty()) verdict.reasons else listOf("Potential phishing or fraudulent website detected")
-        for (r in reasons) {
-            val rText = TextView(context).apply {
-                text = "• $r"
-                textSize = 12f
-                setTextColor(Color.parseColor("#37474F"))
-                setPadding(0, dpToPx(context, 2), 0, dpToPx(context, 2))
-            }
-            reasonsBox.addView(rText)
-        }
-        container.addView(reasonsBox)
-
-        // Action Button
-        val blockButton = Button(context).apply {
-            text = "🛡 Block Link Access"
-            textSize = 15f
-            typeface = Typeface.DEFAULT_BOLD
-            setTextColor(Color.WHITE)
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E65100"))
-                cornerRadius = dpToPx(context, 12).toFloat()
-            }
-            val topMargin = dpToPx(context, 18)
+            val topMargin = dpToPx(context, 16)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dpToPx(context, 50)
+                dpToPx(context, 46)
             ).apply { setMargins(0, topMargin, 0, 0) }
             setOnClickListener {
                 dismissOverlay(context)
             }
         }
-        container.addView(blockButton)
+        container.addView(safeButton)
+
+        // Option 2: Proceed at your own risk
+        val proceedButton = TextView(context).apply {
+            text = "⚠️ Proceed at your own risk"
+            textSize = 12f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.parseColor("#E65100"))
+            gravity = Gravity.CENTER
+            val topMargin = dpToPx(context, 8)
+            setPadding(0, dpToPx(context, 6), 0, dpToPx(context, 6))
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, topMargin, 0, 0) }
+            setOnClickListener {
+                dismissOverlay(context)
+                BrowserLauncher.launchGenuineBrowser(context, webLink.url)
+            }
+        }
+        container.addView(proceedButton)
 
         rootLayout.addView(container)
         return rootLayout

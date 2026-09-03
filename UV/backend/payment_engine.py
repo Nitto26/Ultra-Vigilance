@@ -8,6 +8,7 @@ import logging
 from typing import Set, Any, List, Optional
 from schemas import ScanVerdictResponse
 from cross_channel_memory import threat_memory
+from reason_messages import get_display_messages
 import domain_engine
 
 logger = logging.getLogger(__name__)
@@ -98,22 +99,27 @@ def check_payment_gateway(
             detail = "Suspicious payment recipient or gateway signals detected"
         else:
             verdict = "SAFE"
-
         unique_reasons = list(dict.fromkeys(reasons)) if confidence > 0.40 else []
+        display_reasons = get_display_messages(unique_reasons)
 
         return ScanVerdictResponse(
             verdict=verdict,
             confidence=confidence,
             reasons=unique_reasons,
+            display_reasons=display_reasons,
             detail=detail,
+            source="payment",
             status_code=200
         )
     except Exception as e:
         logger.error(f"Unexpected error in check_payment_gateway: {e}")
+        fallback_reasons = ["scan_error_failed_open"]
         return ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
-            reasons=[],
+            reasons=fallback_reasons,
+            display_reasons=get_display_messages(fallback_reasons),
             detail="Scan completed with fail-open fallback",
+            source="payment",
             status_code=200
         )

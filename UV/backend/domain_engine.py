@@ -1,11 +1,14 @@
 # domain_engine.py
 """
-Domain Heuristics and Machine Learning Phishing Detection Engine.
+Domain Heuristics, Subdomain Brand Impersonation, and Machine Learning Phishing Detection Engine.
 """
+# Auto-reloaded with updated trusted domains allowlist
+import os
 import re
 import math
 import logging
-from typing import Dict, Any, List, Optional
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Set
 import tldextract
 import requests
 import pandas as pd
@@ -22,10 +25,109 @@ from config import (
 )
 from schemas import ScanVerdictResponse
 from cross_channel_memory import threat_memory
+from reason_messages import get_display_messages
 
 logger = logging.getLogger(__name__)
 
-# --- 1. Sets & Constants ---
+# --- 1. Trusted Domains Allowlist ---
+
+def _load_trusted_domains(path: str = "data/trusted_domains.txt") -> Set[str]:
+    """
+    Loads trusted domains set once at startup.
+    Resolves relative to backend root directory.
+    """
+    resolved_path = Path(__file__).parent / path
+    try:
+        with open(resolved_path, "r", encoding="utf-8") as f:
+            domains = set(line.strip().lower() for line in f if line.strip() and not line.startswith("#"))
+            logger.info(f"Loaded {len(domains)} trusted domains from {resolved_path}")
+            return domains
+    except FileNotFoundError:
+        logger.warning(f"trusted_domains.txt not found at {resolved_path} — allowlist will be empty")
+        return set()
+
+TRUSTED_DOMAINS: Set[str] = _load_trusted_domains()
+
+def check_trusted_domain(registered_domain: str) -> bool:
+    """Checks if a registered domain is in the pre-loaded trusted allowlist."""
+    return registered_domain.lower() in TRUSTED_DOMAINS
+
+# --- 2. Subdomain Brand Impersonation Definitions ---
+
+BRAND_OFFICIAL_DOMAINS: Dict[str, str] = {
+    # Global brands
+    "google": "google.com",
+    "paypal": "paypal.com",
+    "apple": "apple.com",
+    "microsoft": "microsoft.com",
+    "amazon": "amazon.com",
+    "netflix": "netflix.com",
+    "facebook": "facebook.com",
+    "chase": "chase.com",
+    "pinterest": "pinterest.com",
+    "twitter": "twitter.com",
+    "instagram": "instagram.com",
+    "linkedin": "linkedin.com",
+    "github": "github.com",
+    "whatsapp": "whatsapp.com",
+
+    # India-specific — highest relevance to threat model
+    "sbi": "sbi.co.in",
+    "onlinesbi": "onlinesbi.sbi",
+    "hdfc": "hdfcbank.com",
+    "hdfcbank": "hdfcbank.com",
+    "icici": "icicibank.com",
+    "icicibank": "icicibank.com",
+    "axis": "axisbank.com",
+    "axisbank": "axisbank.com",
+    "paytm": "paytm.com",
+    "phonepe": "phonepe.com",
+    "googlepay": "pay.google.com",
+    "gpay": "pay.google.com",
+    "kotak": "kotak.com",
+    "pnb": "pnbindia.in",
+    "bob": "bankofbaroda.in",
+    "irctc": "irctc.co.in",
+    "uidai": "uidai.gov.in",
+    "incometax": "incometax.gov.in"
+}
+
+URGENCY_KEYWORDS_SUBDOMAIN: Set[str] = {
+    "verify", "secure", "update", "kyc", "login", "confirm",
+    "account", "alert", "suspended", "reactivate", "unlock",
+    "auth", "recover", "dispute", "support", "portal", "rewards", "claim"
+}
+
+def check_subdomain_for_brand_impersonation(subdomain: str, registered_domain: str) -> List[str]:
+    """
+    Checks whether a brand name appears in the SUBDOMAIN or registered domain,
+    while the actual registered domain does NOT belong to that brand.
+    """
+    flags = []
+    sub_lower = subdomain.lower()
+    combined_target = f"{subdomain} {registered_domain}".lower().replace("-", " ").replace(".", " ")
+
+    matched_brand = None
+    for brand, official_domain in BRAND_OFFICIAL_DOMAINS.items():
+        if (subdomain and brand in sub_lower) or brand in combined_target.split():
+            if registered_domain != official_domain and not registered_domain.endswith(f".{official_domain}"):
+                matched_brand = brand
+                flags.append("brand_name_in_subdomain")
+                break
+
+    has_urgency = any(kw in f"{subdomain} {registered_domain}".lower() for kw in URGENCY_KEYWORDS_SUBDOMAIN)
+    if has_urgency:
+        flags.append("urgency_keyword_in_subdomain")
+
+    # Combined signal
+    if matched_brand and has_urgency:
+        flags.append(f"impersonates_{matched_brand}")
+    elif matched_brand:
+        flags.append(f"impersonates_{matched_brand}")
+
+    return list(dict.fromkeys(flags))
+
+# --- 3. Sets & Heuristics Constants ---
 
 SUSPICIOUS_TLDS = {
     "xyz", "top", "click", "rest", "buzz", "site", "online",
@@ -40,12 +142,7 @@ SUSPICIOUS_KEYWORDS = {
     "pan", "aadhaar", "ebanking", "netbanking", "billpay", "rewards"
 }
 
-TARGET_BRANDS = {
-    "hdfc", "hdfcbank", "sbi", "statebank", "icici", "icicibank",
-    "axis", "axisbank", "pnb", "bob", "kotak", "paytm", "phonepe",
-    "gpay", "razorpay", "paypal", "google", "apple", "amazon",
-    "netflix", "microsoft", "flipkart", "swiggy", "zomato", "irctc", "chase"
-}
+TARGET_BRANDS = set(BRAND_OFFICIAL_DOMAINS.keys())
 
 SHARED_HOSTING_SUFFIXES = {
     "vercel.app", "netlify.app", "github.io", "web.app", "firebaseapp.com",
@@ -59,10 +156,9 @@ KNOWN_SHORTENERS = {
     "buff.ly", "rebrand.ly", "shorturl.at", "cutt.ly", "rb.gy", "tiny.cc"
 }
 
-# In-memory WHOIS cache (keyed by apex domain)
 WHOIS_CACHE: Dict[str, Dict[str, Any]] = {}
 
-# --- 2. Utility Functions & Feature Extraction ---
+# --- 4. Utility Functions & Feature Extraction ---
 
 def shannon_entropy(string: str) -> float:
     if not string:
@@ -81,15 +177,26 @@ def is_shortened_url(domain: str) -> bool:
     return domain_clean in KNOWN_SHORTENERS
 
 def expand_shortened_url(url: str, timeout: float = SHORTENED_URL_TIMEOUT) -> Dict[str, Any]:
-    """Resolves multi-hop shortened links with explicit timeout."""
+    """
+    Resolves multi-hop shortened links with explicit timeout.
+    Uses stream=True GET with standard browser headers to handle shorteners (like Bitly)
+    that reject HTTP HEAD requests with 405 Method Not Allowed.
+    """
     url_str = str(url).strip()
     if not url_str.startswith(("http://", "https://")):
         url_str = "http://" + url_str
     try:
         session = requests.Session()
-        resp = session.head(url_str, allow_redirects=True, timeout=timeout, headers={"User-Agent": "Mozilla/5.0"})
-        return {"resolved": True, "final_url": resp.url}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+        }
+        resp = session.get(url_str, stream=True, allow_redirects=True, timeout=timeout, headers=headers)
+        final_url = resp.url
+        resp.close()
+        return {"resolved": True, "final_url": final_url}
     except Exception as e:
+        logger.debug(f"Failed expanding shortened URL {url_str}: {e}")
         return {"resolved": False, "final_url": url_str, "error": str(e)}
 
 def extract_url_features(url: str) -> Dict[str, Any]:
@@ -98,92 +205,83 @@ def extract_url_features(url: str) -> Dict[str, Any]:
     Fails open to all zeros on malformed/empty/None input without raising.
     """
     default_zeros = {
-        "domain_length": 0, "subdomain_length": 0, "subdomain_count": 0,
-        "has_ip": 0, "has_punycode": 0, "domain_hyphens": 0, "domain_digits": 0,
-        "domain_entropy": 0.0, "subdomain_entropy": 0.0, "vowel_ratio": 0.0,
-        "max_consecutive_consonants": 0, "is_suspicious_tld": 0, "tld_length": 0,
-        "keyword_match_count": 0, "brand_match_count": 0, "is_free_hosting": 0
+        "url_length": 0, "domain_length": 0, "has_ip": 0, "is_suspicious_tld": 0,
+        "hyphen_count": 0, "dot_count": 0, "digit_count": 0, "special_char_count": 0,
+        "shannon_entropy": 0.0, "has_punycode": 0, "has_port": 0, "keyword_match_count": 0,
+        "brand_match_count": 0, "subdomain_count": 0, "path_depth": 0, "domain_hyphens": 0
     }
     if not url or not isinstance(url, str):
         return default_zeros
 
-    url_str = url.strip()
-    if not url_str.startswith(("http://", "https://")):
-        url_str = "http://" + url_str
-
     try:
-        extracted = tldextract.extract(url_str)
-        domain = extracted.domain.lower() if extracted.domain else ""
-        subdomain = extracted.subdomain.lower() if extracted.subdomain else ""
-        suffix = extracted.suffix.lower() if extracted.suffix else ""
-        registered_domain = f"{domain}.{suffix}" if suffix else domain
+        url_clean = url.strip()
+        extracted = tldextract.extract(url_clean)
+        registered_domain = f"{extracted.domain}.{extracted.suffix}" if extracted.suffix else extracted.domain
 
-        vowels = set("aeiou")
-        vowel_count = sum(1 for c in domain if c in vowels)
-        vowel_ratio = vowel_count / max(len(domain), 1)
+        has_ip = 1 if re.search(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}", extracted.domain) else 0
+        is_susp_tld = 1 if extracted.suffix.lower() in SUSPICIOUS_TLDS else 0
+        has_puny = 1 if "xn--" in url_clean.lower() else 0
+        has_port = 1 if re.search(r":\d{2,5}(/|$)", url_clean) else 0
 
-        max_cons = 0
-        curr_cons = 0
-        for c in domain:
-            if c.isalpha() and c not in vowels:
-                curr_cons += 1
-                if curr_cons > max_cons:
-                    max_cons = curr_cons
-            else:
-                curr_cons = 0
+        kw_matches = sum(1 for kw in SUSPICIOUS_KEYWORDS if kw in url_clean.lower())
+        brand_matches = sum(1 for brand in TARGET_BRANDS if brand in url_clean.lower())
+        sub_count = len(extracted.subdomain.split(".")) if extracted.subdomain else 0
 
-        features = {
-            "domain_length": len(domain),
-            "subdomain_length": len(subdomain),
-            "subdomain_count": len(subdomain.split(".")) if subdomain else 0,
-            "has_ip": 1 if re.search(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", domain) else 0,
-            "has_punycode": 1 if "xn--" in url_str else 0,
-            "domain_hyphens": domain.count("-") + subdomain.count("-"),
-            "domain_digits": sum(c.isdigit() for c in domain) + sum(c.isdigit() for c in subdomain),
-            "domain_entropy": shannon_entropy(domain),
-            "subdomain_entropy": shannon_entropy(subdomain),
-            "vowel_ratio": vowel_ratio,
-            "max_consecutive_consonants": max_cons,
-            "is_suspicious_tld": 1 if suffix in SUSPICIOUS_TLDS else 0,
-            "tld_length": len(suffix),
-            "keyword_match_count": sum(1 for kw in SUSPICIOUS_KEYWORDS if kw in domain or kw in subdomain),
-            "brand_match_count": sum(1 for b in TARGET_BRANDS if b in domain or b in subdomain),
-            "is_free_hosting": 1 if (registered_domain in SHARED_HOSTING_SUFFIXES or is_shared_hosting(registered_domain, subdomain)) else 0
+        path_part = url_clean.split("/", 3)[-1] if "/" in url_clean.replace("://", "") else ""
+        path_depth = len([p for p in path_part.split("?")[0].split("/") if p])
+
+        domain_hyphens = extracted.domain.count("-")
+        special_chars = sum(1 for c in url_clean if c in "-_?=&%#@!+~")
+
+        return {
+            "url_length": len(url_clean),
+            "domain_length": len(registered_domain),
+            "has_ip": has_ip,
+            "is_suspicious_tld": is_susp_tld,
+            "hyphen_count": url_clean.count("-"),
+            "dot_count": url_clean.count("."),
+            "digit_count": sum(1 for c in url_clean if c.isdigit()),
+            "special_char_count": special_chars,
+            "shannon_entropy": round(shannon_entropy(url_clean), 4),
+            "has_punycode": has_puny,
+            "has_port": has_port,
+            "keyword_match_count": kw_matches,
+            "brand_match_count": brand_matches,
+            "subdomain_count": sub_count,
+            "path_depth": path_depth,
+            "domain_hyphens": domain_hyphens
         }
-        return features
     except Exception as e:
-        logger.warning(f"Error extracting features from URL {url}: {e}")
+        logger.warning(f"Error extracting features for {url}: {e}")
         return default_zeros
 
-def check_domain_age(url: str, timeout: float = WHOIS_TIMEOUT) -> Dict[str, Any]:
+def check_domain_age(url: str) -> Dict[str, Any]:
     """
-    Queries WHOIS with caching and 3-second hard timeout.
-    Bypasses WHOIS query completely for shared hosting domains.
+    Queries domain creation date via WHOIS with timeout and in-memory caching.
+    Fails open safely to not penalize connection issues or shared platforms.
     """
-    default_fail_open = {"age_days": None, "is_new": False, "trust_age_signal": False, "shared_hosting": False}
-    if not url or not isinstance(url, str):
-        return default_fail_open
-
-    url_str = url.strip()
-    if not url_str.startswith(("http://", "https://")):
-        url_str = "http://" + url_str
+    default_fail_open = {
+        "age_days": 9999,
+        "is_new": False,
+        "trust_age_signal": False,
+        "shared_hosting": False
+    }
 
     try:
-        extracted = tldextract.extract(url_str)
+        extracted = tldextract.extract(url)
         registered_domain = f"{extracted.domain}.{extracted.suffix}".lower()
-        
-        # 1. Check shared hosting FIRST
-        if is_shared_hosting(registered_domain, extracted.subdomain.lower()):
-            return {"age_days": None, "is_new": False, "trust_age_signal": False, "shared_hosting": True}
 
-        if not registered_domain or "." not in registered_domain:
-            return default_fail_open
+        if is_shared_hosting(registered_domain, extracted.subdomain):
+            return {
+                "age_days": 9999,
+                "is_new": False,
+                "trust_age_signal": False,
+                "shared_hosting": True
+            }
 
-        # 2. Check in-memory cache
         if registered_domain in WHOIS_CACHE:
             return WHOIS_CACHE[registered_domain]
 
-        # 3. Attempt WHOIS lookup
         import whois
         w = whois.whois(registered_domain)
         creation_date = w.creation_date
@@ -207,109 +305,149 @@ def check_domain_age(url: str, timeout: float = WHOIS_TIMEOUT) -> Dict[str, Any]
 
     return default_fail_open
 
-def check_subdomain_for_brand_impersonation(subdomain: str) -> List[str]:
-    """Inspects subdomain strings for brand spoofing or urgency keywords."""
-    if not subdomain:
-        return []
-    flags = []
-    sub_lower = subdomain.lower()
-    matched_brands = [b.upper() for b in TARGET_BRANDS if b in sub_lower]
-    if matched_brands:
-        flags.append(f"Fake banking domain impersonating {matched_brands[0]}")
-    if any(kw in sub_lower for kw in SUSPICIOUS_KEYWORDS):
-        flags.append("High urgency language detected in host subdomain")
-    return flags
-
-# --- 3. Orchestration Engine ---
+# --- 5. Main Orchestration Engine ---
 
 def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
     """
     Main orchestration function for domain inspection.
-    Integrates with cross-channel smishing memory and fail-open resilience.
+    Step 1: Checks Trusted Domain Allowlist (instant O(1) short-circuit).
+    Step 2: Subdomain Brand Impersonation & Shared Hosting Check.
+    Step 3: ML Model Inference & Lexical Tags.
+    Step 4: Central Reason-to-Display Mapping.
     """
     try:
         if not url or not isinstance(url, str):
+            reasons = ["scan_error_failed_open"]
             return ScanVerdictResponse(
                 verdict="SAFE",
                 confidence=0.0,
-                reasons=[],
+                reasons=reasons,
+                display_reasons=get_display_messages(reasons),
                 detail="Empty or malformed URL passed",
+                source="domain",
                 status_code=200
             )
 
         target_url = url.strip()
-        reasons = []
-        extracted_init = tldextract.extract(target_url)
-        registered_init = f"{extracted_init.domain}.{extracted_init.suffix}".lower()
+        ext = tldextract.extract(target_url)
+        domain = ext.domain.lower()
+        subdomain = ext.subdomain.lower()
+        registered_domain = f"{domain}.{ext.suffix}".lower() if ext.suffix else domain
 
-        # Cross-Channel Check: Was this URL linked to an active SMS smishing campaign?
+        # =========================================================================
+        # STEP 1: Instant Trusted Domain Allowlist Check
+        # =========================================================================
+        if check_trusted_domain(registered_domain):
+            reasons = ["known_trusted_domain"]
+            return ScanVerdictResponse(
+                verdict="SAFE",
+                confidence=0.02,
+                reasons=reasons,
+                display_reasons=get_display_messages(reasons),
+                detail="Known verified trusted website",
+                source="domain",
+                status_code=200
+            )
+
+        reasons: List[str] = []
+        confidence = 0.0
+
+        # Cross-Channel Check: Active SMS smishing campaign linkage
         in_smish_campaign, campaign_note = threat_memory.check_url_in_sms_campaign(target_url)
         if in_smish_campaign and campaign_note:
-            reasons.append(campaign_note)
+            reasons.append("cross_channel_lure")
 
-        # Step 1: Expand URL Shorteners
-        if is_shortened_url(registered_init):
+        # Step 1b: Expand URL Shorteners
+        if is_shortened_url(registered_domain):
             expanded = expand_shortened_url(target_url)
             if expanded["resolved"]:
                 target_url = expanded["final_url"]
-                reasons.append(f"Shortened phishing link detected ({registered_init})")
+                reasons.append("shortened_url_expanded")
+                ext = tldextract.extract(target_url)
+                domain = ext.domain.lower()
+                subdomain = ext.subdomain.lower()
+                registered_domain = f"{domain}.{ext.suffix}".lower() if ext.suffix else domain
+                if check_trusted_domain(registered_domain):
+                    return ScanVerdictResponse(
+                        verdict="SAFE",
+                        confidence=0.02,
+                        reasons=["known_trusted_domain"],
+                        display_reasons=get_display_messages(["known_trusted_domain"]),
+                        detail="Known verified trusted website",
+                        source="domain",
+                        status_code=200
+                    )
             else:
-                reasons.append("Unresolvable shortened URL destination")
+                reasons.append("shortened_url_unresolvable")
                 return ScanVerdictResponse(
                     verdict="SUSPICIOUS",
                     confidence=0.65,
                     reasons=reasons,
+                    display_reasons=get_display_messages(reasons),
                     detail="Shortened URL with unresolvable destination",
+                    source="domain",
                     status_code=200
                 )
 
-        # Step 2: Feature Extraction & ML Probability
+        # Step 2: Feature Extraction & ML Model Scoring
         features_dict = extract_url_features(target_url)
         df_features = pd.DataFrame([features_dict])
 
-        prob = 0.0
         if model is not None:
             if hasattr(model, "feature_names_in_"):
                 df_features = df_features.reindex(columns=model.feature_names_in_, fill_value=0)
-            prob = float(model.predict_proba(df_features)[0][1])
+            confidence = float(model.predict_proba(df_features)[0][1])
 
-        # Step 3: Domain Age / Shared Hosting Logic
+        # Step 3: Domain Age / Shared Hosting & Subdomain Brand Impersonation
         age_info = check_domain_age(target_url)
+
         if age_info.get("shared_hosting"):
-            reasons.append("Abuse of free shared hosting platform")
-            extracted = tldextract.extract(target_url)
-            sub_flags = check_subdomain_for_brand_impersonation(extracted.subdomain)
-            if sub_flags:
-                prob = min(1.0, prob + SHARED_HOSTING_IMPERSONATION_BOOST)
-                reasons.extend(sub_flags)
+            impersonation_flags = check_subdomain_for_brand_impersonation(subdomain, registered_domain)
+            if impersonation_flags:
+                confidence = min(confidence + SHARED_HOSTING_IMPERSONATION_BOOST, 1.0)
+                reasons.extend(impersonation_flags)
+            else:
+                reasons.append("hosted_on_shared_platform")
         elif age_info.get("is_new"):
-            prob = min(1.0, prob + NEW_DOMAIN_BOOST)
+            confidence = min(confidence + NEW_DOMAIN_BOOST, 1.0)
             age_days = age_info.get("age_days", 0)
-            reasons.append(f"Domain registered {age_days} days ago (newly created)")
+            reasons.append("newly_registered_domain")
+            reasons.append(f"domain_age_{age_days}_days")
+        else:
+            impersonation_flags = check_subdomain_for_brand_impersonation(subdomain, registered_domain)
+            if impersonation_flags:
+                confidence = min(confidence + 0.35, 1.0)
+                reasons.extend(impersonation_flags)
 
-        # Boost if linked to active smishing attack
-        if in_smish_campaign:
-            prob = max(prob, 0.92)
-
-        # Step 4: Lexical Rule Tags
+        # Step 4: Lexical Rule Flags
         if features_dict.get("is_suspicious_tld"):
-            reasons.append(f"High-risk top-level domain (.{extracted_init.suffix})")
+            reasons.append("high_risk_tld")
+            confidence = min(confidence + 0.30, 1.0)
         if features_dict.get("has_ip"):
             reasons.append("Direct IP host with no registered domain name")
+            confidence = min(confidence + 0.40, 1.0)
         if features_dict.get("has_punycode"):
-            reasons.append("Punycode / IDN homograph character spoofing detected")
+            reasons.append("homoglyph_obfuscation")
+            confidence = min(confidence + 0.35, 1.0)
         if features_dict.get("domain_hyphens", 0) >= 2:
-            reasons.append("High hyphen obfuscation in domain name")
-        if features_dict.get("keyword_match_count", 0) > 0 and not any("urgency" in r.lower() for r in reasons):
-            reasons.append("Suspicious credential harvesting and banking keywords")
-        if features_dict.get("brand_match_count", 0) > 0 and not any("impersonating" in r.lower() for r in reasons):
-            matched = [b.upper() for b in TARGET_BRANDS if b in target_url.lower()]
-            reasons.append(f"Brand impersonation target ({matched[0] if matched else 'Brand'})")
+            reasons.append("homoglyph_obfuscation")
+            confidence = min(confidence + 0.20, 1.0)
+        if features_dict.get("keyword_match_count", 0) > 0 and not any("urgency" in r for r in reasons):
+            reasons.append("suspicious_keywords")
+            confidence = min(confidence + 0.20, 1.0)
+        if features_dict.get("brand_match_count", 0) > 0 and not any("impersonat" in r for r in reasons):
+            matched = [b.lower() for b in TARGET_BRANDS if b in target_url.lower()]
+            if matched and registered_domain != BRAND_OFFICIAL_DOMAINS.get(matched[0]):
+                reasons.append(f"impersonates_{matched[0]}")
+                confidence = min(confidence + 0.35, 1.0)
         if not target_url.lower().startswith("https://"):
-            reasons.append("No HTTPS / insecure connection protocol")
+            reasons.append("insecure_connection")
 
-        # Step 5: Verdict Bucketing & Detail
-        confidence = round(float(prob), 2)
+        if in_smish_campaign:
+            confidence = max(confidence, 0.92)
+
+        # Step 5: Final Verdict Categorization
+        confidence = round(float(confidence), 2)
         if confidence > FRAUD_THRESHOLD:
             verdict = "FRAUD"
             detail = "High-risk credential harvesting or malicious domain detected"
@@ -318,23 +456,33 @@ def get_domain_verdict(url: str, model: Any) -> ScanVerdictResponse:
             detail = "Suspicious domain signals detected"
         else:
             verdict = "SAFE"
-            detail = "Document/Message analyzed successfully - verified safe"
+            detail = "Domain analyzed successfully - verified clean"
 
         unique_reasons = list(dict.fromkeys(reasons))
+        display_reasons = get_display_messages(unique_reasons)
 
         return ScanVerdictResponse(
             verdict=verdict,
             confidence=confidence,
             reasons=unique_reasons,
+            display_reasons=display_reasons,
             detail=detail,
+            source="domain",
             status_code=200
         )
     except Exception as e:
-        logger.error(f"Unexpected error in get_domain_verdict for {url}: {e}")
+        logger.error(f"Unexpected error in get_domain_verdict for {url}: {e}", exc_info=True)
+        fallback_reasons = ["scan_error_failed_open"]
         return ScanVerdictResponse(
             verdict="SAFE",
             confidence=0.0,
-            reasons=[],
+            reasons=fallback_reasons,
+            display_reasons=get_display_messages(fallback_reasons),
             detail="Scan completed with fail-open fallback",
+            source="domain",
             status_code=200
         )
+
+# Backward compatibility alias
+predict_url = get_domain_verdict
+scan_domain = get_domain_verdict

@@ -1,18 +1,15 @@
-// background.js — AI-Shield MV3 service worker
-// Watches top-level navigations, checks the target URL against the
-// backend /scan-domain endpoint, and asks the content script to show
-// a banner if the verdict isn't SAFE.
+// background.js — AI-Shield MV3 Service Worker
+// Evaluates all navigations and clicked links with the live FastAPI threat engine.
 
-// TODO: point this at your FastAPI backend (ngrok URL during the demo).
-const API_BASE_URL = "https://mugwumpian-scottie-homely.ngrok-free.dev";
-const SCAN_ENDPOINT = `${API_BASE_URL}/scan-domain`;
-const REQUEST_TIMEOUT_MS = 4000;
+const LOCAL_ENDPOINT = "http://127.0.0.1:8000/scan-document";
+const LOCAL_DOMAIN_ENDPOINT = "http://127.0.0.1:8000/scan-domain";
+const TUNNEL_ENDPOINT = "https://mugwumpian-scottie-homely.ngrok-free.dev/scan-document";
+const REQUEST_TIMEOUT_MS = 5000;
 
-// Small in-memory cache so repeat navigations to the same URL within a
-// session don't re-hit the backend every time.
+// In-memory cache for repeat link evaluations (TTL = 30 seconds)
 const verdictCache = new Map();
 const pendingScans = new Map();
-const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_TTL_MS = 30 * 1000;
 
 function getCached(url) {
     const entry = verdictCache.get(url);
@@ -28,7 +25,27 @@ function setCached(url, verdict) {
     verdictCache.set(url, { verdict, ts: Date.now() });
 }
 
+async function fetchVerdict(endpoint, url, signal) {
+    const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "ngrok-skip-browser-warning": "true"
+        },
+        body: JSON.stringify({ url: url }),
+        signal: signal
+    });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    return await response.json();
+}
+
 async function scanDomain(url) {
+    if (!url || !/^https?:\/\//i.test(url)) {
+        return { verdict: "SAFE", confidence: 0, reasons: [], display_reasons: [] };
+    }
+
     const cached = getCached(url);
     if (cached) return cached;
 
@@ -41,26 +58,23 @@ async function scanDomain(url) {
         const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
         try {
-            const response = await fetch(SCAN_ENDPOINT, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ url }),
-                signal: controller.signal
-            });
-
-            if (!response.ok) {
-                throw new Error(`Backend returned ${response.status}`);
+            let verdict = null;
+            try {
+                verdict = await fetchVerdict(LOCAL_ENDPOINT, url, controller.signal);
+            } catch (err1) {
+                try {
+                    verdict = await fetchVerdict(LOCAL_DOMAIN_ENDPOINT, url, controller.signal);
+                } catch (err2) {
+                    verdict = await fetchVerdict(TUNNEL_ENDPOINT, url, controller.signal);
+                }
             }
 
-            const verdict = await response.json();
-            // Expected shape: { verdict: "SAFE"|"SUSPICIOUS"|"FRAUD", confidence: number, reasons: string[] }
+            console.log(`[AI-Shield Background] Evaluated ${url} ->`, verdict?.verdict, `(${verdict?.confidence})`);
             setCached(url, verdict);
             return verdict;
         } catch (err) {
-            // Fail open: if the backend is unreachable or slow, don't block
-            // browsing — just skip the warning for this navigation.
-            console.warn("[AI-Shield] scan-domain failed, failing open:", err.message);
-            return { verdict: "UNKNOWN", confidence: 0, reasons: ["scan unavailable"] };
+            console.warn(`[AI-Shield Background] Scan failed open for ${url}:`, err.message);
+            return { verdict: "SAFE", confidence: 0, reasons: [], display_reasons: [] };
         } finally {
             clearTimeout(timeout);
             pendingScans.delete(url);
@@ -71,53 +85,101 @@ async function scanDomain(url) {
     return scanPromise;
 }
 
-// 1. Warm-up prefetch on navigation intent
-chrome.webNavigation.onBeforeNavigate.addListener((details) => {
-    // Only care about top-level frames and http(s) URLs
-    if (details.frameId !== 0) return;
-    if (!/^https?:\/\//i.test(details.url)) return;
+// Triggers instant UI notifications & sends payload to active tab
+async function handleThreatVerdict(tabId, url, result) {
+    if (!result || (result.verdict !== "FRAUD" && result.verdict !== "SUSPICIOUS")) return;
 
-    // Start scan early to warm cache while browser handles TLS and fetch
-    scanDomain(details.url);
-});
+    const isFraud = result.verdict === "FRAUD";
+    const riskPct = Math.round((result.confidence || 0) * 100);
 
-// 2. Once the page is committed and content script is injected, push verdict
-chrome.webNavigation.onCommitted.addListener(async (details) => {
-    if (details.frameId !== 0) return;
-    if (!/^https?:\/\//i.test(details.url)) return;
-
-    const result = await scanDomain(details.url);
-
-    if (result.verdict === "FRAUD" || result.verdict === "SUSPICIOUS") {
+    // 1. Set Toolbar Badge Alert
+    if (tabId && chrome.action) {
         try {
-            await chrome.tabs.sendMessage(details.tabId, {
-                type: "AI_SHIELD_VERDICT",
-                url: details.url,
-                verdict: result.verdict,
-                confidence: result.confidence,
-                reasons: result.reasons || []
-            });
+            chrome.action.setBadgeText({ text: isFraud ? "🚨" : "⚠️", tabId });
+            chrome.action.setBadgeBackgroundColor({ color: isFraud ? "#EF4444" : "#F59E0B", tabId });
+        } catch (_) { }
+    }
+
+    // 2. Trigger Native Chrome Notification
+    try {
+        const primaryReason = (result.display_reasons && result.display_reasons.length > 0)
+            ? result.display_reasons[0]
+            : (result.reasons && result.reasons.length > 0 ? result.reasons[0] : "Potential Phishing Threat");
+
+        chrome.notifications.create(`threat-${Date.now()}`, {
+            type: "basic",
+            iconUrl: "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' rx='16' fill='%23EF4444'/><text x='50%' y='55%' font-size='32' text-anchor='middle' dominant-baseline='middle' fill='white'>🛡️</text></svg>",
+            title: isFraud ? `🚨 UV Guard: Fraud Blocked (${riskPct}% Risk)` : `⚠️ UV Guard: Suspicious Link (${riskPct}% Risk)`,
+            message: `${primaryReason}\nDestination: ${url}`,
+            priority: 2
+        });
+    } catch (_) { }
+
+    // 3. Broadcast to Content Script
+    if (tabId) {
+        const payload = {
+            type: "AI_SHIELD_VERDICT",
+            url: url,
+            verdict: result.verdict,
+            confidence: result.confidence,
+            reasons: result.reasons || [],
+            display_reasons: result.display_reasons || result.reasons || []
+        };
+
+        try {
+            await chrome.tabs.sendMessage(tabId, payload);
         } catch (err) {
-            // Content script will pull via GET_VERDICT on load if message isn't caught here
+            // Tab was freshly loaded or navigating; inject content script directly
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tabId },
+                    files: ["content.js"]
+                });
+                setTimeout(() => {
+                    chrome.tabs.sendMessage(tabId, payload).catch(() => { });
+                }, 100);
+            } catch (_) { }
         }
+    }
+}
+
+// 1. On-demand message listener from content script
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (message?.type === "SCAN_URL") {
+        scanDomain(message.url).then(verdict => {
+            if (sender.tab?.id && (verdict.verdict === "FRAUD" || verdict.verdict === "SUSPICIOUS")) {
+                handleThreatVerdict(sender.tab.id, message.url, verdict);
+            }
+            sendResponse(verdict);
+        }).catch(() => {
+            sendResponse({ verdict: "SAFE", confidence: 0, reasons: [], display_reasons: [] });
+        });
+        return true;
     }
 });
 
-// 3. Handle pull requests from content.js (avoids any navigation race condition)
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message?.type === "GET_VERDICT") {
-        const targetUrl = message.url || sender.tab?.url;
-        if (!targetUrl) {
-            sendResponse({ verdict: "UNKNOWN", confidence: 0, reasons: ["No URL provided"] });
-            return;
-        }
+// 2. Navigation intent prefetch
+chrome.webNavigation.onBeforeNavigate.addListener(async (details) => {
+    if (details.frameId !== 0) return;
+    if (!/^https?:\/\//i.test(details.url)) return;
+    const result = await scanDomain(details.url);
+    if (result.verdict === "FRAUD" || result.verdict === "SUSPICIOUS") {
+        handleThreatVerdict(details.tabId, details.url, result);
+    }
+});
 
-        scanDomain(targetUrl)
-            .then((result) => sendResponse(result))
-            .catch((err) => {
-                sendResponse({ verdict: "UNKNOWN", confidence: 0, reasons: [err.message] });
-            });
+// 3. Tab commit broadcast
+chrome.webNavigation.onCommitted.addListener(async (details) => {
+    if (details.frameId !== 0) return;
+    if (!/^https?:\/\//i.test(details.url)) return;
+    const result = await scanDomain(details.url);
+    handleThreatVerdict(details.tabId, details.url, result);
+});
 
-        return true; // Keep channel open for async sendResponse
+// 4. Tab completed status listener
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete" && tab.url && /^https?:\/\//i.test(tab.url)) {
+        const result = await scanDomain(tab.url);
+        handleThreatVerdict(tabId, tab.url, result);
     }
 });
